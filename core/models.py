@@ -12,13 +12,28 @@ class FieldConfidence(BaseModel):
     source_note: str | None = None
 
 
+class BillTariffPeriod(BaseModel):
+    label: str
+    kwh: float | None = Field(default=None, ge=0)
+    unit_price_per_kwh: float | None = Field(default=None, ge=0)
+    energy_charge: float | None = Field(default=None, ge=0)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class BillData(BaseModel):
+    source_file: str | None = None
     monthly_kwh: float = Field(gt=0)
     currency: str = "USD"
     total_cost: float = Field(ge=0)
     tariff_per_kwh: float = Field(ge=0)
     billing_period_start: date | None = None
     billing_period_end: date | None = None
+    tariff_periods: list[BillTariffPeriod] = Field(default_factory=list)
+    active_energy_charge: float | None = Field(default=None, ge=0)
+    penalties: float | None = Field(default=None, ge=0)
+    taxes_and_fees: float | None = Field(default=None, ge=0)
+    fixed_or_demand_charges: float | None = Field(default=None, ge=0)
+    tariff_basis: str = "unknown"
     extraction_notes: list[str] = Field(default_factory=list)
     field_confidence: dict[str, float] = Field(default_factory=dict)
 
@@ -30,29 +45,81 @@ class BillData(BaseModel):
         cleaned = dict(data)
         notes = list(cleaned.get("extraction_notes") or [])
         confidence = dict(cleaned.get("field_confidence") or {})
+        periods = cleaned.get("tariff_periods") or cleaned.get("tou_periods") or []
+        cleaned["tariff_periods"] = periods
+
+        def period_value(period: Any, key: str) -> Any:
+            if isinstance(period, dict):
+                return period.get(key)
+            return getattr(period, key, None)
+
+        period_kwh = sum(
+            float(period_value(period, "kwh") or 0)
+            for period in periods
+        )
+        period_energy_charge = sum(
+            float(period_value(period, "energy_charge") or 0)
+            for period in periods
+        )
+        weighted_tariff_numerator = sum(
+            float(period_value(period, "kwh") or 0)
+            * float(period_value(period, "unit_price_per_kwh") or 0)
+            for period in periods
+            if period_value(period, "kwh") is not None
+            and period_value(period, "unit_price_per_kwh") is not None
+        )
 
         monthly_kwh = cleaned.get("monthly_kwh")
         if monthly_kwh is None or float(monthly_kwh or 0) <= 0:
-            monthly_kwh = 10000.0
-            cleaned["monthly_kwh"] = monthly_kwh
-            notes.append("monthly_kwh missing or unreadable; fallback 10,000 kWh used.")
-            confidence["monthly_kwh"] = min(confidence.get("monthly_kwh", 0.2), 0.2)
+            if period_kwh > 0:
+                monthly_kwh = period_kwh
+                cleaned["monthly_kwh"] = monthly_kwh
+                notes.append("monthly_kwh calculated as the sum of extracted active tariff period kWh.")
+                confidence["monthly_kwh"] = min(confidence.get("monthly_kwh", 0.8), 0.8)
+            else:
+                monthly_kwh = 10000.0
+                cleaned["monthly_kwh"] = monthly_kwh
+                notes.append("monthly_kwh missing or unreadable; fallback 10,000 kWh used.")
+                confidence["monthly_kwh"] = min(confidence.get("monthly_kwh", 0.2), 0.2)
 
         total_cost = cleaned.get("total_cost")
         if total_cost is None or float(total_cost or 0) < 0:
-            total_cost = float(monthly_kwh) * 0.20
-            cleaned["total_cost"] = total_cost
-            notes.append("total_cost missing or unreadable; fallback tariff of 0.20 used.")
-            confidence["total_cost"] = min(confidence.get("total_cost", 0.2), 0.2)
+            if period_energy_charge > 0:
+                total_cost = period_energy_charge
+                cleaned["total_cost"] = total_cost
+                cleaned["active_energy_charge"] = cleaned.get("active_energy_charge") or total_cost
+                notes.append("total_cost missing; active energy charge used as provisional total cost.")
+                confidence["total_cost"] = min(confidence.get("total_cost", 0.5), 0.5)
+            else:
+                total_cost = float(monthly_kwh) * 0.20
+                cleaned["total_cost"] = total_cost
+                notes.append("total_cost missing or unreadable; fallback tariff of 0.20 used.")
+                confidence["total_cost"] = min(confidence.get("total_cost", 0.2), 0.2)
+
+        if cleaned.get("active_energy_charge") is None and period_energy_charge > 0:
+            cleaned["active_energy_charge"] = period_energy_charge
 
         tariff = cleaned.get("tariff_per_kwh")
         if tariff is None or float(tariff or 0) <= 0:
-            tariff = float(total_cost) / float(monthly_kwh)
+            if period_kwh > 0 and weighted_tariff_numerator > 0:
+                tariff = weighted_tariff_numerator / period_kwh
+                cleaned["tariff_basis"] = "weighted_active_time_of_use_unit_prices"
+                notes.append("tariff_per_kwh calculated as weighted average of active time-of-use unit prices.")
+                confidence["tariff_per_kwh"] = min(confidence.get("tariff_per_kwh", 0.9), 0.9)
+            elif cleaned.get("active_energy_charge") is not None and float(cleaned["active_energy_charge"]) > 0:
+                tariff = float(cleaned["active_energy_charge"]) / float(monthly_kwh)
+                cleaned["tariff_basis"] = "active_energy_charge_divided_by_active_kwh"
+                notes.append("tariff_per_kwh calculated as active_energy_charge / monthly_kwh.")
+                confidence["tariff_per_kwh"] = min(confidence.get("tariff_per_kwh", 0.8), 0.8)
+            else:
+                tariff = float(total_cost) / float(monthly_kwh)
+                cleaned["tariff_basis"] = "total_invoice_divided_by_active_kwh"
+                notes.append("tariff_per_kwh calculated as total_cost / monthly_kwh.")
+                confidence["tariff_per_kwh"] = min(confidence.get("tariff_per_kwh", 0.5), 0.5)
             cleaned["tariff_per_kwh"] = tariff
-            notes.append("tariff_per_kwh calculated as total_cost / monthly_kwh.")
-            confidence["tariff_per_kwh"] = min(confidence.get("tariff_per_kwh", 0.7), 0.7)
 
         cleaned["currency"] = cleaned.get("currency") or "USD"
+        cleaned["tariff_basis"] = cleaned.get("tariff_basis") or "unknown"
         cleaned["extraction_notes"] = notes
         cleaned["field_confidence"] = confidence
         return cleaned
@@ -91,6 +158,39 @@ class ClientInfo(BaseModel):
     @classmethod
     def normalize_industry(cls, value: str) -> str:
         return value.strip().lower().replace(" ", "_")
+
+
+class ClientInfoDraft(BaseModel):
+    client_name: str | None = None
+    industry: str | None = None
+    country: str | None = None
+    city: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    business_description: str | None = None
+    has_diesel_generators: bool | None = None
+    grid_connection_kva: float | None = Field(default=None, ge=0)
+    available_roof_area_m2: float | None = Field(default=None, ge=0)
+    daytime_fraction_override: float | None = Field(default=None, gt=0, le=1)
+    ppa_tariff_per_kwh_override: float | None = Field(default=None, ge=0)
+    diesel_price_per_liter_override: float | None = Field(default=None, ge=0)
+    extraction_notes: list[str] = Field(default_factory=list)
+    field_confidence: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("industry")
+    @classmethod
+    def normalize_optional_industry(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().lower().replace(" ", "_")
+
+    @field_validator("field_confidence")
+    @classmethod
+    def validate_optional_confidence_map(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, confidence in value.items():
+            if confidence < 0 or confidence > 1:
+                raise ValueError(f"confidence for {key} must be between 0 and 1")
+        return value
 
 
 class AssumptionsUsed(BaseModel):
@@ -165,4 +265,3 @@ class ProposalResponse(BaseModel):
     calc_result: CalcResult
     narrative: NarrativeSections
     warnings: list[str] = Field(default_factory=list)
-

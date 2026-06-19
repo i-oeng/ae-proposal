@@ -10,6 +10,12 @@ def ensure_dir(path: str | Path) -> Path:
     return directory
 
 
+def load_local_env() -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv(project_root() / ".env", override=False)
+
+
 def safe_slug(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
     return slug or "proposal"
@@ -29,4 +35,3 @@ def format_kwp(value: float) -> str:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
-

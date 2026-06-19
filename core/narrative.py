@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from core.config_loader import AppConfig
 from core.models import BillData, CalcResult, ClientInfo, NarrativeSections
-from core.utils import format_currency, format_kwp, format_number
+from core.utils import format_currency, format_kwp, format_number, load_local_env
 
 
 SYSTEM_PROMPT = """
@@ -28,6 +28,7 @@ Write for a CFO or business owner.
 Be concise, professional, and persuasive.
 Return strict JSON only.
 """
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 
 def _fallback_narrative(
@@ -144,10 +145,11 @@ def _remove_unauthorized_number_sentences(
 
 
 def _call_claude_narrative(prompt_payload: str) -> dict[str, Any]:
+    load_local_env()
     from anthropic import Anthropic
 
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    model = os.getenv("ANTHROPIC_TEXT_MODEL", "claude-3-5-sonnet-latest")
+    model = os.getenv("ANTHROPIC_TEXT_MODEL", DEFAULT_ANTHROPIC_MODEL)
     message = client.messages.create(
         model=model,
         max_tokens=2200,
@@ -177,6 +179,7 @@ def generate_narrative(
     style_reference: str | None,
     config: AppConfig,
 ) -> NarrativeSections:
+    load_local_env()
     if not os.getenv("ANTHROPIC_API_KEY"):
         return _fallback_narrative(bill, client, calc, facts_pack_text)
 
@@ -203,4 +206,3 @@ def generate_narrative(
     if last_error:
         return _remove_unauthorized_number_sentences(fallback, allowed)
     return fallback
-

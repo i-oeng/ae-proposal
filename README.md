@@ -4,7 +4,7 @@
 
 Aspan Proposal Engine is a first-version internal tool for producing editable solar/PPA PowerPoint proposals from utility bills, client information, approved Aspan facts, and deterministic solar economics.
 
-The demo UI is Streamlit, not Gradio. The rest of the pipeline remains the same: core Python engine, thin FastAPI wrapper, and n8n orchestration that calls FastAPI.
+The main UI is a Next.js/React workspace backed by FastAPI. Streamlit remains available as a fast fallback demo. The rest of the pipeline stays the same: core Python engine, thin FastAPI wrapper, and n8n orchestration that calls FastAPI.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ The project has three operating layers:
 2. The deterministic solar economics engine calculates PV sizing, production, tariffs, and savings.
 3. The grounded proposal writer creates client-facing prose using only approved facts and already calculated numbers.
 
-LLMs are used only for extraction and narrative. Python owns all financial and engineering calculations. The Streamlit app and FastAPI API both call the same core modules.
+LLMs are used only for extraction and narrative. Python owns all financial and engineering calculations. The React app, Streamlit app, and FastAPI API all call the same core modules.
 
 ## Why Calculations Are Deterministic
 
@@ -33,13 +33,14 @@ Use the provided virtual environment:
 ```
 
 Copy `.env.example` to `.env` and add your Anthropic key if you want live Claude extraction and narrative.
+The app automatically loads `.env` from the project root for Streamlit, FastAPI, and scripts.
 
 ## Environment Variables
 
 ```env
 ANTHROPIC_API_KEY=your_api_key_here
-ANTHROPIC_VISION_MODEL=claude-3-5-sonnet-latest
-ANTHROPIC_TEXT_MODEL=claude-3-5-sonnet-latest
+ANTHROPIC_VISION_MODEL=claude-sonnet-4-6
+ANTHROPIC_TEXT_MODEL=claude-sonnet-4-6
 ```
 
 Without `ANTHROPIC_API_KEY`, the system uses fallback bill extraction and deterministic fallback narrative so the demo still runs.
@@ -55,14 +56,39 @@ The highest-priority tests are in `tests/test_calc_engine.py`.
 ## Run FastAPI
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn api.main:app --reload --port 8000
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
 ```
+
+On Windows, prefer the no-reload command above for demos. `--reload` is useful during development, but its watcher can print noisy multiprocessing tracebacks when the process is interrupted.
 
 Endpoints:
 
 - `GET /health`
 - `POST /extract-bill`
+- `POST /extract-bill-collection`
+- `POST /extract-client-info`
+- `POST /calculate-preview`
 - `POST /generate-proposal`
+
+## Run React UI
+
+From a second terminal:
+
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
+```
+
+Open `http://127.0.0.1:3000`. The frontend proxies `/api/*` to FastAPI at `http://127.0.0.1:8000` by default. To point it somewhere else, set `NEXT_PUBLIC_API_BASE_URL` before starting Next.js.
+
+The React workspace supports:
+
+- Utility bill PDFs and images, including French CIE-style monthly bills
+- Client PDFs, PPTX files, and images
+- Editable review fields before calculations
+- Deterministic calculation preview
+- PPTX generation and download
 
 ## Run Streamlit UI
 
@@ -70,7 +96,13 @@ Endpoints:
 .\.venv\Scripts\streamlit.exe run ui/app.py
 ```
 
-The Streamlit app supports bill upload, editable bill review, client inputs, assumptions review, calculation preview, proposal generation, and PPTX download.
+The Streamlit app has two extraction tabs:
+
+- Utility Bills accepts bill PDFs, screenshots, and images, then extracts consumption, cost, tariff, period, confidence, and notes.
+- French CIE-style monthly bills preserve time-of-use rows such as `Nuit`, `Pointe`, and `Jour`, plus active energy charge, penalties, taxes/fees, fixed or demand charges, and tariff basis.
+- Client Information accepts PDFs, PPTX files, screenshots, and images, then extracts client name, industry, country, business description, diesel generator status, grid capacity, roof area, assumptions, confidence, and notes.
+
+Both tabs populate editable review fields. Calculations and proposal generation remain disabled until the required reviewed fields are present.
 
 ## n8n Workflow
 
@@ -97,6 +129,7 @@ The script uses dummy confirmed bill data and writes an editable PowerPoint into
 api/                  FastAPI wrapper
 automation/           n8n workflow export
 core/                 Models, config, extraction, calculations, grounding, narrative, PPTX, logging
+frontend/             Next.js/React proposal workspace
 knowledge_base/       Approved facts pack Markdown files
 reference_materials/  Optional style references by metadata
 templates/            Placeholder PowerPoint template
@@ -109,7 +142,8 @@ ui/                   Streamlit demo app
 
 ## Assumptions And Limitations
 
-- Utility bill extraction depends on Claude when `ANTHROPIC_API_KEY` is set.
+- Utility bill and client information extraction depend on Claude when `ANTHROPIC_API_KEY` is set.
+- PPTX client materials are converted to slide text locally before Claude extracts structured client information.
 - Missing or unreadable bill values fall back to documented low-confidence defaults.
 - Missing roof area uses a conservative fallback in full proposal calculation.
 - Missing grid capacity does not dominate PV sizing.
@@ -129,4 +163,3 @@ ui/                   Streamlit demo app
 8. Aspan-branded design system after receiving official templates
 9. Approval workflow before sending proposals
 10. Cloud deployment
-

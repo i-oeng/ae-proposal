@@ -43,3 +43,22 @@ def test_client_industry_normalized() -> None:
     )
     assert client.industry == "food_processing"
 
+
+def test_bill_data_computes_weighted_tariff_from_periods() -> None:
+    bill = BillData.model_validate(
+        {
+            "monthly_kwh": None,
+            "currency": "XOF",
+            "total_cost": 50000,
+            "tariff_per_kwh": None,
+            "tariff_periods": [
+                {"label": "Nuit", "kwh": 100, "unit_price_per_kwh": 70, "energy_charge": 7000},
+                {"label": "Jour", "kwh": 300, "unit_price_per_kwh": 90, "energy_charge": 27000},
+            ],
+            "field_confidence": {},
+        }
+    )
+    assert bill.monthly_kwh == pytest.approx(400)
+    assert bill.active_energy_charge == pytest.approx(34000)
+    assert bill.tariff_per_kwh == pytest.approx(85)
+    assert bill.tariff_basis == "weighted_active_time_of_use_unit_prices"

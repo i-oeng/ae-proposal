@@ -198,7 +198,13 @@ def build_pptx(
             f"Monthly consumption: {format_number(bill.monthly_kwh)} kWh",
             f"Monthly electricity cost: {format_currency(bill.total_cost, bill.currency)}",
             f"Grid tariff: {format_currency(bill.tariff_per_kwh, bill.currency, 3)} per kWh",
+            f"Tariff basis: {bill.tariff_basis.replace('_', ' ')}",
             f"Diesel generators: {'Yes' if client.has_diesel_generators else 'No'}",
+            *(
+                [f"Penalties: {format_currency(bill.penalties, bill.currency)}"]
+                if bill.penalties is not None
+                else []
+            ),
         ],
     )
     _add_text_box(slide, 5.05, 1.35, 4.2, 2.8, narrative.current_energy_situation, 13)
@@ -319,6 +325,9 @@ def build_pptx(
         f"Recommended kWp: {format_kwp(calc.assumptions.recommended_kwp)}",
         f"PPA tariff: {format_currency(calc.assumptions.ppa_tariff_per_kwh, bill.currency, 3)} per kWh",
         f"Grid tariff: {format_currency(calc.assumptions.grid_tariff_per_kwh, bill.currency, 3)} per kWh",
+        f"Tariff basis: {bill.tariff_basis.replace('_', ' ')}",
+        f"Active energy charge: {format_currency(bill.active_energy_charge or 0, bill.currency)}",
+        f"Penalties: {format_currency(bill.penalties or 0, bill.currency)}",
         f"Diesel price: {format_currency(calc.assumptions.diesel_price_per_liter, bill.currency, 2)} per liter",
         f"Diesel kWh per liter: {calc.assumptions.diesel_kwh_per_liter:.2f}",
         f"Performance ratio: {calc.assumptions.performance_ratio:.2f}",
@@ -341,4 +350,3 @@ def build_pptx(
     output_path = output_dir / filename
     prs.save(output_path)
     return str(output_path)
-
