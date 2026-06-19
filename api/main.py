@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import shutil
 import tempfile
 from pathlib import Path
@@ -12,12 +13,20 @@ from core.calc_engine import calculate_proposal
 from core.client_extraction import extract_client_info
 from core.config_loader import load_config
 from core.extraction import extract_bill_collection
-from core.models import BillData, BillExtractionResult, CalcResult, ClientInfoDraft, ProposalRequest
+from core.models import (
+    BillData,
+    BillExtractionResult,
+    CalcResult,
+    ClientInfoDraft,
+    DocumentExtractionResult,
+    ProposalRequest,
+)
 from core.pipeline import generate_proposal_artifacts
 from core.supabase_store import (
     get_supabase_store,
     safe_create_run,
     safe_insert_client,
+    safe_list_proposal_runs,
     safe_store_documents,
     safe_store_proposal_output,
     safe_update_run,
@@ -45,6 +54,21 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/proposal-runs")
+def proposal_runs_endpoint(limit: int = 25) -> dict[str, list[dict]]:
+    store = get_supabase_store()
+    normalized_limit = min(max(limit, 1), 100)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(safe_list_proposal_runs, store, normalized_limit)
+    try:
+        return {"runs": future.result(timeout=4)}
+    except FuturesTimeoutError:
+        future.cancel()
+        return {"runs": []}
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def _save_uploads(files: list[UploadFile], temp_dir: str) -> list[str]:
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one file.")
@@ -60,6 +84,33 @@ def _save_uploads(files: list[UploadFile], temp_dir: str) -> list[str]:
 
     if not saved_paths:
         raise HTTPException(status_code=400, detail="Uploaded files were empty or unnamed.")
+    return saved_paths
+
+
+def _save_optional_uploads(files: list[UploadFile] | None, temp_dir: str, subdirectory: str) -> list[str]:
+    if not files:
+        return []
+
+    target_dir = Path(temp_dir) / subdirectory
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[str] = []
+    used_names: dict[str, int] = {}
+
+    for file in files:
+        if not file.filename:
+            continue
+        original_name = Path(file.filename).name
+        count = used_names.get(original_name, 0)
+        used_names[original_name] = count + 1
+        safe_name = original_name
+        if count:
+            path = Path(original_name)
+            safe_name = f"{path.stem}-{count}{path.suffix}"
+        target = target_dir / safe_name
+        with target.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        saved_paths.append(str(target))
+
     return saved_paths
 
 
@@ -133,6 +184,48 @@ async def extract_client_info_endpoint(
         safe_store_documents(store, run_id, saved_paths, "client_information", extraction_by_file)
         safe_update_run(store, run_id, client=draft)
     return draft
+
+
+@app.post("/extract-documents", response_model=DocumentExtractionResult)
+async def extract_documents_endpoint(
+    response: Response,
+    bill_files: list[UploadFile] | None = File(default=None),
+    client_files: list[UploadFile] | None = File(default=None),
+    x_proposal_run_id: str | None = Header(default=None, alias="X-Proposal-Run-Id"),
+):
+    config = load_config()
+    store = get_supabase_store()
+    run_id = safe_create_run(store, x_proposal_run_id)
+    _set_run_header(response, run_id)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        bill_paths = _save_optional_uploads(bill_files, temp_dir, "utility_bills")
+        client_paths = _save_optional_uploads(client_files, temp_dir, "client_information")
+        if not bill_paths and not client_paths:
+            raise HTTPException(status_code=400, detail="Upload utility bills or client information files.")
+
+        bill_result: BillExtractionResult | None = None
+        client_draft: ClientInfoDraft | None = None
+        warnings: list[str] = []
+
+        if bill_paths:
+            bill_result = extract_bill_collection(bill_paths, config)
+            safe_store_documents(store, run_id, bill_paths, "utility_bill", _bill_extractions_by_file(bill_result))
+            warnings.extend(bill_result.warnings)
+
+        if client_paths:
+            client_draft = extract_client_info(client_paths, config)
+            extraction_by_file = {Path(path).name: client_draft for path in client_paths}
+            safe_store_documents(store, run_id, client_paths, "client_information", extraction_by_file)
+
+        safe_update_run(
+            store,
+            run_id,
+            bill=bill_result,
+            client=client_draft,
+            warnings=warnings if warnings else None,
+        )
+        return DocumentExtractionResult(bill=bill_result, client=client_draft, warnings=warnings)
 
 
 @app.post("/calculate-preview", response_model=CalcResult)

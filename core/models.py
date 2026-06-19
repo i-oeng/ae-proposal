@@ -193,6 +193,12 @@ class ClientInfoDraft(BaseModel):
         return value
 
 
+class DocumentExtractionResult(BaseModel):
+    bill: BillExtractionResult | None = None
+    client: ClientInfoDraft | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AssumptionsUsed(BaseModel):
     monthly_kwh: float
     daytime_fraction: float

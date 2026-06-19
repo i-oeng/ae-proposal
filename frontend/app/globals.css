@@ -33,9 +33,11 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.94)),
-    repeating-linear-gradient(90deg, rgba(15, 23, 42, 0.035) 0 1px, transparent 1px 80px),
-    repeating-linear-gradient(0deg, rgba(34, 197, 94, 0.035) 0 1px, transparent 1px 80px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(248, 250, 252, 0.84)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.05), rgba(15, 23, 42, 0) 38%, rgba(34, 197, 94, 0.04)),
+    repeating-linear-gradient(90deg, rgba(15, 23, 42, 0.026) 0 1px, transparent 1px 80px),
+    repeating-linear-gradient(0deg, rgba(34, 197, 94, 0.026) 0 1px, transparent 1px 80px),
+    url("/panel2-bg.jpg") center center / cover fixed no-repeat,
     var(--wash);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -85,81 +87,14 @@ svg {
   display: flex;
   min-height: 100vh;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 34px;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
   background:
     linear-gradient(180deg, rgba(59, 130, 246, 0.16), rgba(15, 23, 42, 0)),
     var(--rail);
   color: #f9fffd;
   padding: 28px 22px;
-}
-
-.mark {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  border: 1px solid rgba(148, 163, 184, 0.52);
-  border-radius: 999px;
-  padding: 3px 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #dcfce7;
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.sideRail h1 {
-  margin: 18px 0 0;
-  color: #ffffff;
-  font-size: 1.65rem;
-  line-height: 1.08;
-  letter-spacing: 0;
-}
-
-.stepList {
-  display: grid;
-  gap: 10px;
-  margin: 42px 0;
-}
-
-.stepItem {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 38px;
-  color: rgba(255, 255, 255, 0.74);
-  font-weight: 700;
-}
-
-.stepItem span {
-  width: 10px;
-  height: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  border-radius: 50%;
-}
-
-.stepItem.active {
-  color: #ffffff;
-}
-
-.stepItem.active span {
-  border-color: var(--accent);
-  background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
-}
-
-.sideFooter {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.sideFooter span {
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 999px;
-  padding: 5px 8px;
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 0.74rem;
-  font-weight: 700;
 }
 
 .workspace {
@@ -175,6 +110,7 @@ svg {
 .sectionHeader,
 .panelTitle,
 .actionCluster,
+.topActions,
 .commandStrip,
 .periodHeader {
   display: flex;
@@ -208,6 +144,44 @@ svg {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.topActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.railTabs {
+  display: grid;
+  gap: 8px;
+}
+
+.railTab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.74);
+  padding: 10px 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.railTab.active {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: #ffffff;
+}
+
+.railTab:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .primaryButton,
@@ -257,10 +231,6 @@ svg {
 .ghostButton:hover:not(:disabled),
 .iconButton:hover:not(:disabled) {
   transform: translateY(-1px);
-}
-
-.fullWidth {
-  width: 100%;
 }
 
 .spin {
@@ -313,6 +283,7 @@ svg {
 .reviewPanel,
 .dataBand,
 .metricsBand,
+.scenarioPanel,
 .warningPanel {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -322,13 +293,15 @@ svg {
 
 .uploadPanel,
 .reviewPanel,
-.dataBand {
+.dataBand,
+.scenarioPanel {
   position: relative;
 }
 
 .uploadPanel::before,
 .reviewPanel::before,
-.dataBand::before {
+.dataBand::before,
+.scenarioPanel::before {
   position: absolute;
   inset: 0 0 auto;
   height: 3px;
@@ -340,6 +313,7 @@ svg {
 .uploadPanel,
 .reviewPanel,
 .dataBand,
+.scenarioPanel,
 .warningPanel {
   padding: 16px;
 }
@@ -398,11 +372,8 @@ svg {
   clip: rect(0 0 0 0);
 }
 
-.fileDrop + button {
-  margin-top: 12px;
-}
-
-.dataBand {
+.dataBand,
+.scenarioPanel {
   display: grid;
   gap: 12px;
 }
@@ -594,10 +565,157 @@ textarea {
   line-height: 1.2;
 }
 
+.economicsStack {
+  display: grid;
+  gap: 16px;
+}
+
+.scenarioGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scenarioCard {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+  padding: 14px;
+}
+
+.scenarioHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scenarioHeader strong {
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.scenarioHeader span {
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.scenarioRows {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.scenarioRows div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--soft-line);
+  padding: 9px 0;
+}
+
+.scenarioRows dt,
+.scenarioRows dd {
+  margin: 0;
+}
+
+.scenarioRows dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.scenarioRows dd {
+  color: var(--ink);
+  font-weight: 850;
+  text-align: right;
+}
+
 .warningPanel {
   display: grid;
   gap: 8px;
   box-shadow: none;
+}
+
+.historyStack {
+  display: grid;
+  gap: 16px;
+}
+
+.dashboardMetrics {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.historyPanel {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.historyPanel::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: linear-gradient(90deg, var(--blue), var(--accent));
+  content: "";
+}
+
+.historyEmpty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  gap: 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+}
+
+.historyEmpty svg {
+  color: var(--blue);
+}
+
+.historyTable code {
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+  color: var(--ink-soft);
+  padding: 3px 6px;
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.statusPill.generated {
+  background: #dcfce7;
+  color: var(--accent-strong);
 }
 
 @media (max-width: 1180px) {
@@ -611,15 +729,6 @@ textarea {
     padding: 18px 20px;
   }
 
-  .stepList {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    margin: 18px 0;
-  }
-
-  .sideFooter {
-    display: none;
-  }
-
   .metricsBand {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -631,6 +740,7 @@ textarea {
   }
 
   .topBar,
+  .topActions,
   .commandStrip {
     align-items: stretch;
     flex-direction: column;
@@ -658,6 +768,20 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .scenarioGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .scenarioRows div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .scenarioRows dd {
+    text-align: left;
+  }
+
   .metric {
     border-right: 0;
     border-bottom: 1px solid var(--soft-line);
@@ -665,10 +789,6 @@ textarea {
 
   .metric:last-child {
     border-bottom: 0;
-  }
-
-  .stepList {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

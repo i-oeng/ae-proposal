@@ -7,13 +7,16 @@ import {
   CheckCircle2,
   Download,
   FileText,
+  History,
+  LayoutDashboard,
   Loader2,
   Plus,
+  RefreshCw,
   RotateCcw,
   Trash2,
   UploadCloud,
 } from "lucide-react";
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 
 type TariffPeriod = {
   label: string;
@@ -65,6 +68,23 @@ type ClientInfoDraft = {
   field_confidence: Record<string, number>;
 };
 
+type DocumentExtractionResult = {
+  bill: BillExtractionResult | null;
+  client: ClientInfoDraft | null;
+  warnings: string[];
+};
+
+type ScenarioResult = {
+  name: string;
+  monthly_savings_year_1: number;
+  annual_savings_year_1: number;
+  cumulative_savings: number;
+  year_1_solar_used_kwh: number;
+  yearly_savings: number[];
+  current_cost_per_kwh_year_1: number;
+  ppa_tariff_per_kwh: number;
+};
+
 type CalcResult = {
   daytime_kwh_monthly: number;
   annual_daytime_consumption_kwh: number;
@@ -74,16 +94,8 @@ type CalcResult = {
     recommended_kwp: number;
     binding_constraint: string;
   };
-  scenario_grid_replacement: {
-    monthly_savings_year_1: number;
-    annual_savings_year_1: number;
-    cumulative_savings: number;
-  };
-  scenario_grid_diesel: {
-    monthly_savings_year_1: number;
-    annual_savings_year_1: number;
-    cumulative_savings: number;
-  };
+  scenario_grid_replacement: ScenarioResult;
+  scenario_grid_diesel: ScenarioResult;
   warnings: string[];
 };
 
@@ -140,6 +152,26 @@ type ApiResult<T> = {
   runId: string | null;
 };
 
+type ActiveView = "workspace" | "history";
+
+type HistoryClient = {
+  client_name?: string | null;
+  industry?: string | null;
+  country?: string | null;
+  city?: string | null;
+};
+
+type HistoryRun = {
+  id: string;
+  status?: string | null;
+  created_at?: string | null;
+  client_json?: Partial<ClientInfoDraft> | null;
+  bill_json?: unknown;
+  calc_json?: unknown;
+  warnings?: string[] | null;
+  clients?: HistoryClient | null;
+};
+
 const emptyBillForm: BillForm = {
   monthly_kwh: "",
   currency: "",
@@ -191,6 +223,10 @@ const numberFormat = new Intl.NumberFormat("en-US", {
 
 const moneyFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
+});
+
+const tariffFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 4,
 });
 
 function asText(value: string | number | null | undefined): string {
@@ -285,10 +321,15 @@ function apiHeaders(runId: string | null, contentType = false): Record<string, s
   return headers;
 }
 
-async function uploadFiles<T>(path: string, files: File[], runId: string | null): Promise<ApiResult<T>> {
+async function uploadDocumentSet(
+  billFiles: File[],
+  clientFiles: File[],
+  runId: string | null,
+): Promise<ApiResult<DocumentExtractionResult>> {
   const formData = new FormData();
-  files.forEach((file) => formData.append("files", file));
-  const response = await fetch(path, {
+  billFiles.forEach((file) => formData.append("bill_files", file));
+  clientFiles.forEach((file) => formData.append("client_files", file));
+  const response = await fetch("/api/extract-documents", {
     method: "POST",
     headers: apiHeaders(runId),
     body: formData,
@@ -297,7 +338,7 @@ async function uploadFiles<T>(path: string, files: File[], runId: string | null)
     throw new Error(await readApiError(response));
   }
   return {
-    data: (await response.json()) as T,
+    data: (await response.json()) as DocumentExtractionResult,
     runId: response.headers.get("x-proposal-run-id"),
   };
 }
@@ -321,12 +362,43 @@ function fileLabel(files: File[]): string {
   return `${files.length} files selected`;
 }
 
+function intakeSummary(billFiles: File[], clientFiles: File[]): string {
+  const parts = [];
+  if (billFiles.length) {
+    parts.push(`${billFiles.length} bill${billFiles.length === 1 ? "" : "s"}`);
+  }
+  if (clientFiles.length) {
+    parts.push(`${clientFiles.length} client file${clientFiles.length === 1 ? "" : "s"}`);
+  }
+  return parts.length ? parts.join(" + ") : "No files selected";
+}
+
 function filenameFromDisposition(disposition: string | null): string {
   if (!disposition) {
     return "aspan-proposal.pptx";
   }
   const match = disposition.match(/filename="?([^"]+)"?/i);
   return match?.[1] || "aspan-proposal.pptx";
+}
+
+function formatRunDate(value: string | null | undefined): string {
+  if (!value) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function historyClientName(run: HistoryRun): string {
+  return run.clients?.client_name || run.client_json?.client_name || "Untitled client";
+}
+
+function historyCountry(run: HistoryRun): string {
+  return run.clients?.country || run.client_json?.country || "-";
 }
 
 export default function ProposalWorkspace() {
@@ -337,8 +409,11 @@ export default function ProposalWorkspace() {
   const [monthlyBills, setMonthlyBills] = useState<BillData[]>([]);
   const [preview, setPreview] = useState<CalcResult | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [busy, setBusy] = useState<"bill" | "client" | "preview" | "proposal" | null>(null);
+  const [busy, setBusy] = useState<"all" | "preview" | "proposal" | null>(null);
   const [proposalRunId, setProposalRunId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<ActiveView>("workspace");
+  const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [resetKey, setResetKey] = useState(0);
 
   const canPreview = useMemo(() => {
@@ -359,6 +434,29 @@ export default function ProposalWorkspace() {
     ...clientForm.extraction_notes.filter((note) => note.toLowerCase().includes("fallback")),
     ...(preview?.warnings || []),
   ];
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const response = await fetch("/api/proposal-runs?limit=25");
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+      const body = (await response.json()) as { runs?: HistoryRun[] };
+      setHistoryRuns(body.runs || []);
+    } catch (error) {
+      setStatus({ tone: "warn", text: error instanceof Error ? error.message : "Proposal history unavailable." });
+      setHistoryRuns([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeView === "history") {
+      void loadHistory();
+    }
+  }, [activeView]);
 
   function resetWorkspace() {
     setBillFiles([]);
@@ -383,49 +481,33 @@ export default function ProposalWorkspace() {
     setPreview(null);
   }
 
-  async function extractBills() {
-    if (billFiles.length === 0) {
-      setStatus({ tone: "warn", text: "Select at least one utility bill." });
+  async function extractAllDocuments() {
+    if (billFiles.length === 0 && clientFiles.length === 0) {
+      setStatus({ tone: "warn", text: "Select utility bills or client documents first." });
       return;
     }
-    setBusy("bill");
+    setBusy("all");
     setStatus(null);
     try {
-      const result = await uploadFiles<BillExtractionResult>("/api/extract-bill-collection", billFiles, proposalRunId);
+      const result = await uploadDocumentSet(billFiles, clientFiles, proposalRunId);
       if (result.runId) {
         setProposalRunId(result.runId);
       }
-      setBillForm(billToForm(result.data.combined_bill));
-      setMonthlyBills(result.data.bills);
+      if (result.data.bill) {
+        setBillForm(billToForm(result.data.bill.combined_bill));
+        setMonthlyBills(result.data.bill.bills);
+      }
+      if (result.data.client) {
+        setClientForm(clientToForm(result.data.client));
+      }
+
       setPreview(null);
       setStatus({
         tone: result.data.warnings.length ? "warn" : "ok",
-        text: result.data.warnings[0] || "Utility bill extraction complete.",
+        text: result.data.warnings[0] || "Document extraction complete.",
       });
     } catch (error) {
-      setStatus({ tone: "error", text: error instanceof Error ? error.message : "Bill extraction failed." });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function extractClient() {
-    if (clientFiles.length === 0) {
-      setStatus({ tone: "warn", text: "Select at least one client document." });
-      return;
-    }
-    setBusy("client");
-    setStatus(null);
-    try {
-      const result = await uploadFiles<ClientInfoDraft>("/api/extract-client-info", clientFiles, proposalRunId);
-      if (result.runId) {
-        setProposalRunId(result.runId);
-      }
-      setClientForm(clientToForm(result.data));
-      setPreview(null);
-      setStatus({ tone: "ok", text: "Client extraction complete." });
-    } catch (error) {
-      setStatus({ tone: "error", text: error instanceof Error ? error.message : "Client extraction failed." });
+      setStatus({ tone: "error", text: error instanceof Error ? error.message : "Document extraction failed." });
     } finally {
       setBusy(null);
     }
@@ -544,45 +626,59 @@ export default function ProposalWorkspace() {
 
   return (
     <main className="appShell">
-      <aside className="sideRail" aria-label="Workflow">
-        <div>
-          <div className="mark">Aspan</div>
-          <h1>Proposal Engine</h1>
-        </div>
-        <nav className="stepList">
-          <StepItem label="Bills" active={billForm.monthly_kwh !== ""} />
-          <StepItem label="Client" active={clientForm.client_name !== ""} />
-          <StepItem label="Economics" active={preview !== null} />
-          <StepItem label="Deck" active={status?.text === "PowerPoint generated."} />
+      <aside className="sideRail" aria-label="Application">
+        <nav className="railTabs" aria-label="Primary views">
+          <button
+            className={activeView === "workspace" ? "railTab active" : "railTab"}
+            type="button"
+            onClick={() => setActiveView("workspace")}
+            title="Workspace"
+          >
+            <LayoutDashboard aria-hidden="true" />
+            Workspace
+          </button>
+          <button
+            className={activeView === "history" ? "railTab active" : "railTab"}
+            type="button"
+            onClick={() => setActiveView("history")}
+            title="Dashboard and history"
+          >
+            <History aria-hidden="true" />
+            Dashboard & History
+          </button>
         </nav>
-        <div className="sideFooter">
-          <span>FastAPI</span>
-          <span>React</span>
-          <span>Supabase</span>
-        </div>
       </aside>
 
       <section className="workspace">
         <header className="topBar">
           <div>
-            <p className="eyebrow">Solar PPA workspace</p>
-            <h2>Extract, review, calculate, generate.</h2>
+            <p className="eyebrow">{activeView === "workspace" ? "" : "Proposal intelligence"}</p>
+            <h2>{activeView === "workspace" ? "Extract, review, calculate, generate." : "Dashboard & History"}</h2>
           </div>
-          <div className="actionCluster">
-            <button className="ghostButton" type="button" onClick={resetWorkspace} title="Reset workspace">
-              <RotateCcw aria-hidden="true" />
-              Reset
-            </button>
-            <button
-              className="primaryButton"
-              type="button"
-              onClick={generateProposal}
-              disabled={!canPreview || busy === "proposal"}
-              title="Generate PowerPoint"
-            >
-              {busy === "proposal" ? <Loader2 className="spin" aria-hidden="true" /> : <Download aria-hidden="true" />}
-              Generate PPTX
-            </button>
+          <div className="topActions">
+            {activeView === "workspace" ? (
+              <div className="actionCluster">
+                <button className="ghostButton" type="button" onClick={resetWorkspace} title="Reset workspace">
+                  <RotateCcw aria-hidden="true" />
+                  Reset
+                </button>
+                <button
+                  className="primaryButton"
+                  type="button"
+                  onClick={generateProposal}
+                  disabled={!canPreview || busy === "proposal"}
+                  title="Generate PowerPoint"
+                >
+                  {busy === "proposal" ? <Loader2 className="spin" aria-hidden="true" /> : <Download aria-hidden="true" />}
+                  Generate PPTX
+                </button>
+              </div>
+            ) : (
+              <button className="secondaryButton" type="button" onClick={loadHistory} disabled={historyLoading} title="Refresh history">
+                {historyLoading ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+                Refresh
+              </button>
+            )}
           </div>
         </header>
 
@@ -593,77 +689,165 @@ export default function ProposalWorkspace() {
           </div>
         ) : null}
 
-        <section className="uploadGrid" aria-label="Document extraction">
-          <UploadPanel
-            icon={<FileText aria-hidden="true" />}
-            title="Utility bills"
-            fileLabel={fileLabel(billFiles)}
-            inputKey={`bill-${resetKey}`}
-            accept=".pdf,image/*"
-            multiple
-            busy={busy === "bill"}
-            buttonLabel="Extract bills"
-            onFiles={onBillFiles}
-            onAction={extractBills}
+        {activeView === "workspace" ? (
+          <>
+            <section className="uploadGrid" aria-label="Document extraction">
+              <UploadPanel
+                icon={<FileText aria-hidden="true" />}
+                title="Utility bills"
+                fileLabel={fileLabel(billFiles)}
+                inputKey={`bill-${resetKey}`}
+                accept=".pdf,image/*"
+                multiple
+                onFiles={onBillFiles}
+              />
+              <UploadPanel
+                icon={<Building2 aria-hidden="true" />}
+                title="Client information"
+                fileLabel={fileLabel(clientFiles)}
+                inputKey={`client-${resetKey}`}
+                accept=".pdf,.pptx,image/*"
+                multiple
+                onFiles={onClientFiles}
+              />
+            </section>
+
+            <section className="commandStrip extractionStrip" aria-label="Combined extraction controls">
+              <button
+                className="primaryButton"
+                type="button"
+                onClick={extractAllDocuments}
+                disabled={busy === "all" || (billFiles.length === 0 && clientFiles.length === 0)}
+                title="Extract selected utility and client documents"
+              >
+                {busy === "all" ? <Loader2 className="spin" aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
+                Extract documents
+              </button>
+              <span className="requirementState">{intakeSummary(billFiles, clientFiles)}</span>
+            </section>
+
+            {monthlyBills.length > 0 ? <BillSummary bills={monthlyBills} /> : null}
+
+            <section className="reviewGrid" aria-label="Review fields">
+              <BillReview billForm={billForm} setBillForm={setBillForm} />
+              <ClientReview clientForm={clientForm} setClientForm={setClientForm} />
+            </section>
+
+            <section className="commandStrip" aria-label="Calculation controls">
+              <button
+                className="secondaryButton"
+                type="button"
+                onClick={previewEconomics}
+                disabled={!canPreview || busy === "preview"}
+                title="Preview economics"
+              >
+                {busy === "preview" ? <Loader2 className="spin" aria-hidden="true" /> : <Calculator aria-hidden="true" />}
+                Preview economics
+              </button>
+              <span className="requirementState">{canPreview ? "Ready for calculation" : "Required fields are still open"}</span>
+            </section>
+
+            {preview ? <EconomicsPreview preview={preview} billCurrency={billForm.currency} /> : null}
+
+            {warnings.length > 0 ? (
+              <section className="warningPanel" aria-label="Warnings">
+                {warnings.map((warning) => (
+                  <div key={warning}>
+                    <AlertCircle aria-hidden="true" />
+                    <span>{warning}</span>
+                  </div>
+                ))}
+              </section>
+            ) : null}
+          </>
+        ) : (
+          <DashboardHistory
+            runs={historyRuns}
+            loading={historyLoading}
+            currentRunId={proposalRunId}
+            monthlyBills={monthlyBills}
+            preview={preview}
+            canPreview={canPreview}
           />
-          <UploadPanel
-            icon={<Building2 aria-hidden="true" />}
-            title="Client information"
-            fileLabel={fileLabel(clientFiles)}
-            inputKey={`client-${resetKey}`}
-            accept=".pdf,.pptx,image/*"
-            multiple
-            busy={busy === "client"}
-            buttonLabel="Extract client"
-            onFiles={onClientFiles}
-            onAction={extractClient}
-          />
-        </section>
-
-        {monthlyBills.length > 0 ? <BillSummary bills={monthlyBills} /> : null}
-
-        <section className="reviewGrid" aria-label="Review fields">
-          <BillReview billForm={billForm} setBillForm={setBillForm} />
-          <ClientReview clientForm={clientForm} setClientForm={setClientForm} />
-        </section>
-
-        <section className="commandStrip" aria-label="Calculation controls">
-          <button
-            className="secondaryButton"
-            type="button"
-            onClick={previewEconomics}
-            disabled={!canPreview || busy === "preview"}
-            title="Preview economics"
-          >
-            {busy === "preview" ? <Loader2 className="spin" aria-hidden="true" /> : <Calculator aria-hidden="true" />}
-            Preview economics
-          </button>
-          <span className="requirementState">{canPreview ? "Ready for calculation" : "Required fields are still open"}</span>
-        </section>
-
-        {preview ? <EconomicsPreview preview={preview} billCurrency={billForm.currency} /> : null}
-
-        {warnings.length > 0 ? (
-          <section className="warningPanel" aria-label="Warnings">
-            {warnings.map((warning) => (
-              <div key={warning}>
-                <AlertCircle aria-hidden="true" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </section>
-        ) : null}
+        )}
       </section>
     </main>
   );
 }
 
-function StepItem({ label, active }: { label: string; active: boolean }) {
+function DashboardHistory({
+  runs,
+  loading,
+  currentRunId,
+  monthlyBills,
+  preview,
+  canPreview,
+}: {
+  runs: HistoryRun[];
+  loading: boolean;
+  currentRunId: string | null;
+  monthlyBills: BillData[];
+  preview: CalcResult | null;
+  canPreview: boolean;
+}) {
   return (
-    <div className={active ? "stepItem active" : "stepItem"}>
-      <span aria-hidden="true" />
-      {label}
-    </div>
+    <section className="historyStack" aria-label="Dashboard and proposal history">
+      <section className="metricsBand dashboardMetrics" aria-label="Workspace summary">
+        <Metric label="Current run" value={currentRunId ? "Synced" : "Draft"} />
+        <Metric label="Bills extracted" value={String(monthlyBills.length)} />
+        <Metric label="Review state" value={canPreview ? "Ready" : "Open"} />
+        <Metric
+          label="Recommended PV"
+          value={preview ? `${moneyFormat.format(preview.pv_recommendation.recommended_kwp)} kWp` : "-"}
+        />
+        <Metric label="Saved runs" value={String(runs.length)} />
+        <Metric label="History" value={loading ? "Loading" : "Live"} />
+      </section>
+
+      <section className="historyPanel" aria-label="Proposal runs">
+        <div className="sectionHeader">
+          <h3>Proposal runs</h3>
+          <span>{loading ? "Syncing" : `${runs.length} saved`}</span>
+        </div>
+        {runs.length === 0 ? (
+          <div className="historyEmpty">
+            <History aria-hidden="true" />
+            <strong>No saved proposal runs.</strong>
+          </div>
+        ) : (
+          <div className="tableScroller">
+            <table className="historyTable">
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th>Country</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                  <th>Run ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((run) => (
+                  <tr key={run.id}>
+                    <td>{historyClientName(run)}</td>
+                    <td>{historyCountry(run)}</td>
+                    <td>
+                      <span className={run.status === "generated" ? "statusPill generated" : "statusPill"}>
+                        {run.status || "draft"}
+                      </span>
+                    </td>
+                    <td>{formatRunDate(run.created_at)}</td>
+                    <td>
+                      <code>{run.id.slice(0, 8)}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </section>
   );
 }
 
@@ -674,10 +858,7 @@ function UploadPanel({
   inputKey,
   accept,
   multiple,
-  busy,
-  buttonLabel,
   onFiles,
-  onAction,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -685,10 +866,7 @@ function UploadPanel({
   inputKey: string;
   accept: string;
   multiple: boolean;
-  busy: boolean;
-  buttonLabel: string;
   onFiles: (event: ChangeEvent<HTMLInputElement>) => void;
-  onAction: () => void;
 }) {
   return (
     <div className="uploadPanel">
@@ -701,10 +879,6 @@ function UploadPanel({
         <span>{fileLabel}</span>
         <input key={inputKey} type="file" accept={accept} multiple={multiple} onChange={onFiles} />
       </label>
-      <button className="secondaryButton fullWidth" type="button" onClick={onAction} disabled={busy}>
-        {busy ? <Loader2 className="spin" aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
-        {buttonLabel}
-      </button>
     </div>
   );
 }
@@ -930,15 +1104,59 @@ function ConfidenceBadge({ value }: { value: number | undefined }) {
 }
 
 function EconomicsPreview({ preview, billCurrency }: { preview: CalcResult; billCurrency: string }) {
+  const scenarios = [preview.scenario_grid_replacement, preview.scenario_grid_diesel];
+
   return (
-    <section className="metricsBand" aria-label="Economics preview">
-      <Metric label="Recommended PV" value={`${moneyFormat.format(preview.pv_recommendation.recommended_kwp)} kWp`} />
-      <Metric label="Annual production" value={`${numberFormat.format(preview.annual_solar_production_kwh)} kWh`} />
-      <Metric label="PPA tariff" value={`${billCurrency} ${moneyFormat.format(preview.ppa_tariff_per_kwh)}`} />
-      <Metric label="Grid savings Y1" value={`${billCurrency} ${moneyFormat.format(preview.scenario_grid_replacement.annual_savings_year_1)}`} />
-      <Metric label="Grid + diesel Y1" value={`${billCurrency} ${moneyFormat.format(preview.scenario_grid_diesel.annual_savings_year_1)}`} />
-      <Metric label="Binding constraint" value={preview.pv_recommendation.binding_constraint.replaceAll("_", " ")} />
-    </section>
+    <div className="economicsStack">
+      <section className="metricsBand" aria-label="Economics preview">
+        <Metric label="Recommended PV" value={`${moneyFormat.format(preview.pv_recommendation.recommended_kwp)} kWp`} />
+        <Metric label="Annual production" value={`${numberFormat.format(preview.annual_solar_production_kwh)} kWh`} />
+        <Metric label="PPA tariff" value={`${billCurrency} ${tariffFormat.format(preview.ppa_tariff_per_kwh)}`} />
+        <Metric label="Grid Y1" value={`${billCurrency} ${moneyFormat.format(preview.scenario_grid_replacement.annual_savings_year_1)}`} />
+        <Metric label="Grid + diesel Y1" value={`${billCurrency} ${moneyFormat.format(preview.scenario_grid_diesel.annual_savings_year_1)}`} />
+        <Metric label="Binding constraint" value={preview.pv_recommendation.binding_constraint.replaceAll("_", " ")} />
+      </section>
+
+      <section className="scenarioPanel" aria-label="Scenario comparison">
+        <div className="sectionHeader">
+          <h3>Scenario comparison</h3>
+          <span>{scenarios.length} modeled</span>
+        </div>
+        <div className="scenarioGrid">
+          {scenarios.map((scenario) => (
+            <ScenarioCard key={scenario.name} scenario={scenario} billCurrency={billCurrency} />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ScenarioCard({ scenario, billCurrency }: { scenario: ScenarioResult; billCurrency: string }) {
+  const rows = [
+    ["Year 1 monthly savings", `${billCurrency} ${moneyFormat.format(scenario.monthly_savings_year_1)}`],
+    ["Year 1 annual savings", `${billCurrency} ${moneyFormat.format(scenario.annual_savings_year_1)}`],
+    ["Cumulative savings", `${billCurrency} ${moneyFormat.format(scenario.cumulative_savings)}`],
+    ["Solar used in year 1", `${numberFormat.format(scenario.year_1_solar_used_kwh)} kWh`],
+    ["Baseline cost", `${billCurrency} ${tariffFormat.format(scenario.current_cost_per_kwh_year_1)}/kWh`],
+    ["PPA tariff", `${billCurrency} ${tariffFormat.format(scenario.ppa_tariff_per_kwh)}/kWh`],
+  ];
+
+  return (
+    <article className="scenarioCard" aria-label={scenario.name}>
+      <div className="scenarioHeader">
+        <strong>{scenario.name}</strong>
+        <span>{scenario.yearly_savings.length} years</span>
+      </div>
+      <dl className="scenarioRows">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </article>
   );
 }
 
