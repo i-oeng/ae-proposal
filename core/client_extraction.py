@@ -60,6 +60,25 @@ def _normalize_industry(value: str | None) -> str | None:
     return normalized
 
 
+def _extract_pdf_text(file_path: str) -> str:
+    try:
+        import pdfplumber
+    except ImportError:
+        return ""
+
+    lines: list[str] = []
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            for page_index, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
+                if text.strip():
+                    lines.append(f"Page {page_index}:\n{text.strip()}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PDF text extraction failed for %s: %s", file_path, exc)
+        return ""
+    return "\n\n".join(lines)
+
+
 def _extract_pptx_text(file_path: str) -> str:
     prs = Presentation(file_path)
     lines: list[str] = []
@@ -91,6 +110,20 @@ def _content_blocks_for_client_files(file_paths: list[str]) -> list[dict[str, An
                     ),
                 }
             )
+        elif suffix == ".pdf":
+            text = _extract_pdf_text(file_path)
+            if len(text.strip()) >= 80:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Extracted text from uploaded PDF file {path.name}:\n\n"
+                            f"{text[:45000]}"
+                        ),
+                    }
+                )
+            else:
+                blocks.append(_content_block_for_file(file_path))
         else:
             blocks.append(_content_block_for_file(file_path))
     return blocks
@@ -105,9 +138,26 @@ def _call_claude_for_client_info(file_paths: list[str]) -> dict[str, Any]:
     prompt = """
 Extract client information for a commercial solar/PPA proposal.
 
-Use the uploaded client documents, site visit notes, presentations, PDFs, screenshots, or images.
+Use the uploaded client documents, site visit reports, technical feasibility reports, prior commercial offers,
+presentations, PDFs, screenshots, or images.
 Return strict JSON only. Use null when a value is not present and cannot be reasonably inferred.
 Reasonable assumptions are allowed, but every assumption must be listed in extraction_notes.
+
+Extraction guidance:
+- Business descriptions may explicitly state the company activity; map cocoa, beverage, food factory,
+  cold rooms, roasting, processing, packaging, and agro-industry to food_processing unless a better
+  supported industry is clearly stated.
+- Site visit reports may contain fields such as "Site", "Client", "Coordonnees GPS", "transformateur",
+  "groupe electrogene", "Surface Totale", "Puissance Estimee", and roof/building tables. Use those
+  to infer city, coordinates, grid_connection_kva, has_diesel_generators, and available_roof_area_m2.
+- Convert GPS coordinates from degrees/minutes/seconds to decimal latitude and longitude.
+- If a report lists multiple roof areas, use the sum of usable or listed roof areas for available_roof_area_m2
+  and explain the basis in extraction_notes. Do not use proposed kWp as roof area.
+- Existing offer decks can confirm client name, country, project size, PPA term, tariff references, and
+  diesel assumptions, but do not overwrite stronger site-report values with marketing summary values.
+- If a proposed ASPAN/PPA solar tariff per kWh is explicitly stated, put it in ppa_tariff_per_kwh_override.
+- If a diesel fuel price per liter is explicitly stated, put it in diesel_price_per_liter_override.
+- Prefer source values from technical reports over older commercial offer slides when there is a conflict.
 
 Supported industry values:
 manufacturing, cold_storage, food_processing, retail, hospitality
@@ -182,4 +232,3 @@ def extract_client_info(file_paths: list[str], config: AppConfig) -> ClientInfoD
         f"Claude client extraction failed twice using model "
         f"{os.getenv('ANTHROPIC_VISION_MODEL', DEFAULT_ANTHROPIC_MODEL)}: {last_error}"
     )
-

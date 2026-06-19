@@ -1,18 +1,21 @@
 :root {
-  --ink: #161817;
-  --muted: #687076;
-  --line: #d9e0e2;
-  --soft-line: #edf1f2;
+  --ink: #0f172a;
+  --ink-soft: #1e293b;
+  --muted: #64748b;
+  --line: #cbd5e1;
+  --soft-line: #e2e8f0;
   --paper: #ffffff;
-  --wash: #f4f7f7;
-  --rail: #0d4f47;
-  --accent: #0a8f7a;
-  --accent-strong: #076c5d;
-  --blue: #245bd6;
-  --warn: #a15c00;
+  --wash: #f8fafc;
+  --wash-strong: #f1f5f9;
+  --rail: #0f172a;
+  --accent: #22c55e;
+  --accent-strong: #15803d;
+  --blue: #3b82f6;
+  --warn: #b45309;
   --danger: #b42318;
-  --shadow: 0 18px 50px rgba(22, 24, 23, 0.08);
+  --shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.1);
   --radius: 8px;
+  --radius-sm: 4px;
   --fast: 160ms ease;
 }
 
@@ -30,7 +33,9 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    repeating-linear-gradient(90deg, rgba(10, 143, 122, 0.08) 0 1px, transparent 1px 72px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.94)),
+    repeating-linear-gradient(90deg, rgba(15, 23, 42, 0.035) 0 1px, transparent 1px 80px),
+    repeating-linear-gradient(0deg, rgba(34, 197, 94, 0.035) 0 1px, transparent 1px 80px),
     var(--wash);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -81,9 +86,9 @@ svg {
   min-height: 100vh;
   flex-direction: column;
   justify-content: space-between;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0)),
+    linear-gradient(180deg, rgba(59, 130, 246, 0.16), rgba(15, 23, 42, 0)),
     var(--rail);
   color: #f9fffd;
   padding: 28px 22px;
@@ -93,10 +98,11 @@ svg {
   display: inline-flex;
   align-items: center;
   min-height: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(148, 163, 184, 0.52);
   border-radius: 999px;
   padding: 3px 10px;
-  color: #d9fff7;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dcfce7;
   font-size: 0.82rem;
   font-weight: 700;
 }
@@ -136,8 +142,9 @@ svg {
 }
 
 .stepItem.active span {
-  border-color: #96ffe9;
-  background: #96ffe9;
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
 }
 
 .sideFooter {
@@ -159,7 +166,9 @@ svg {
   display: grid;
   align-content: start;
   gap: 18px;
-  padding: 26px;
+  width: min(100%, 1280px);
+  margin-inline: auto;
+  padding: 32px;
 }
 
 .topBar,
@@ -175,13 +184,13 @@ svg {
 .topBar {
   justify-content: space-between;
   gap: 18px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--soft-line);
   padding-bottom: 18px;
 }
 
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--accent-strong);
+  color: var(--blue);
   font-size: 0.78rem;
   font-weight: 800;
   text-transform: uppercase;
@@ -189,7 +198,8 @@ svg {
 
 .topBar h2 {
   margin: 0;
-  font-size: 1.45rem;
+  color: var(--ink);
+  font-size: 1.55rem;
   line-height: 1.2;
   letter-spacing: 0;
 }
@@ -224,13 +234,15 @@ svg {
 }
 
 .primaryButton {
-  background: var(--ink);
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  background: var(--accent-strong);
   color: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .secondaryButton {
   border: 1px solid var(--line);
-  background: var(--paper);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
   color: var(--ink);
 }
 
@@ -272,9 +284,9 @@ svg {
 }
 
 .statusLine.ok {
-  border: 1px solid rgba(10, 143, 122, 0.22);
-  background: #eaf8f4;
-  color: #064f45;
+  border: 1px solid rgba(34, 197, 94, 0.24);
+  background: #f0fdf4;
+  color: #166534;
 }
 
 .statusLine.warn {
@@ -304,8 +316,25 @@ svg {
 .warningPanel {
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--paper);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
   box-shadow: var(--shadow);
+}
+
+.uploadPanel,
+.reviewPanel,
+.dataBand {
+  position: relative;
+}
+
+.uploadPanel::before,
+.reviewPanel::before,
+.dataBand::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: linear-gradient(90deg, var(--accent), var(--blue));
+  content: "";
 }
 
 .uploadPanel,
@@ -342,7 +371,7 @@ svg {
   width: 32px;
   height: 32px;
   border-radius: var(--radius);
-  background: #eaf8f4;
+  background: #dcfce7;
   color: var(--accent-strong);
 }
 
@@ -351,9 +380,11 @@ svg {
   min-height: 112px;
   place-items: center;
   gap: 8px;
-  border: 1px dashed #b8c4c8;
+  border: 1px dashed #94a3b8;
   border-radius: var(--radius);
-  background: #fbfdfd;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.86)),
+    repeating-linear-gradient(135deg, rgba(59, 130, 246, 0.06) 0 1px, transparent 1px 12px);
   color: var(--muted);
   padding: 16px;
   text-align: center;
@@ -407,6 +438,10 @@ th {
   text-transform: uppercase;
 }
 
+tbody tr:hover {
+  background: #f8fafc;
+}
+
 .reviewPanel {
   display: grid;
   gap: 14px;
@@ -427,6 +462,7 @@ th {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+  text-transform: uppercase;
 }
 
 input,
@@ -435,10 +471,17 @@ textarea {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: #ffffff;
   color: var(--ink);
   padding: 10px 11px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
 
 textarea {
@@ -459,7 +502,7 @@ textarea {
 }
 
 .confidenceBadge.good {
-  background: #eaf8f4;
+  background: #dcfce7;
   color: var(--accent-strong);
 }
 
@@ -511,7 +554,7 @@ textarea {
   gap: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--paper);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
   padding: 12px;
 }
 
@@ -519,6 +562,7 @@ textarea {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   overflow: hidden;
+  background: #ffffff;
 }
 
 .metric {
@@ -527,6 +571,8 @@ textarea {
   min-height: 108px;
   gap: 7px;
   border-right: 1px solid var(--soft-line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
   padding: 15px;
 }
 
@@ -543,6 +589,7 @@ textarea {
 
 .metric strong {
   overflow-wrap: anywhere;
+  color: var(--ink);
   font-size: 1.05rem;
   line-height: 1.2;
 }

@@ -41,9 +41,32 @@ The app automatically loads `.env` from the project root for Streamlit, FastAPI,
 ANTHROPIC_API_KEY=your_api_key_here
 ANTHROPIC_VISION_MODEL=claude-sonnet-4-6
 ANTHROPIC_TEXT_MODEL=claude-sonnet-4-6
+
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=sb_secret_your_secret_key
+SUPABASE_DOCUMENT_BUCKET=aspan-documents
+SUPABASE_PROPOSAL_BUCKET=aspan-proposals
 ```
 
 Without `ANTHROPIC_API_KEY`, the system uses fallback bill extraction and deterministic fallback narrative so the demo still runs.
+Without Supabase variables, the API runs locally without persistence.
+
+## Supabase Setup
+
+Run [supabase/schema.sql](supabase/schema.sql) in the Supabase SQL editor. It creates:
+
+- `clients`
+- `proposal_runs`
+- `documents`
+- `proposal_outputs`
+- private Storage buckets `aspan-documents` and `aspan-proposals`
+
+The FastAPI backend uses `SUPABASE_SECRET_KEY` and writes to Supabase server-side only. The React app never receives the secret key. Proposal work is grouped by the `X-Proposal-Run-Id` response/request header:
+
+- Bill extraction uploads source bills, saves extracted bill JSON, and updates `proposal_runs.bill_json`.
+- Client extraction uploads client files, saves extracted client JSON, and updates `proposal_runs.client_json`.
+- Calculation preview updates `proposal_runs.calc_json`.
+- Proposal generation inserts a client row, uploads the generated PPTX, and creates a `proposal_outputs` record.
 
 ## Run Tests
 
@@ -132,6 +155,7 @@ core/                 Models, config, extraction, calculations, grounding, narra
 frontend/             Next.js/React proposal workspace
 knowledge_base/       Approved facts pack Markdown files
 reference_materials/  Optional style references by metadata
+supabase/             SQL schema for persistence
 templates/            Placeholder PowerPoint template
 outputs/              Generated PPTX files
 cache/                NASA POWER and upload cache

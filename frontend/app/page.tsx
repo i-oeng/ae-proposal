@@ -135,6 +135,11 @@ type Status = {
   text: string;
 };
 
+type ApiResult<T> = {
+  data: T;
+  runId: string | null;
+};
+
 const emptyBillForm: BillForm = {
   monthly_kwh: "",
   currency: "",
@@ -269,17 +274,32 @@ function requiredNumber(value: string, label: string): number {
   return parsed;
 }
 
-async function uploadFiles<T>(path: string, files: File[]): Promise<T> {
+function apiHeaders(runId: string | null, contentType = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (contentType) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (runId) {
+    headers["X-Proposal-Run-Id"] = runId;
+  }
+  return headers;
+}
+
+async function uploadFiles<T>(path: string, files: File[], runId: string | null): Promise<ApiResult<T>> {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
   const response = await fetch(path, {
     method: "POST",
+    headers: apiHeaders(runId),
     body: formData,
   });
   if (!response.ok) {
     throw new Error(await readApiError(response));
   }
-  return response.json() as Promise<T>;
+  return {
+    data: (await response.json()) as T,
+    runId: response.headers.get("x-proposal-run-id"),
+  };
 }
 
 async function readApiError(response: Response): Promise<string> {
@@ -318,6 +338,7 @@ export default function ProposalWorkspace() {
   const [preview, setPreview] = useState<CalcResult | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState<"bill" | "client" | "preview" | "proposal" | null>(null);
+  const [proposalRunId, setProposalRunId] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
 
   const canPreview = useMemo(() => {
@@ -348,6 +369,7 @@ export default function ProposalWorkspace() {
     setPreview(null);
     setStatus(null);
     setBusy(null);
+    setProposalRunId(null);
     setResetKey((value) => value + 1);
   }
 
@@ -369,13 +391,16 @@ export default function ProposalWorkspace() {
     setBusy("bill");
     setStatus(null);
     try {
-      const result = await uploadFiles<BillExtractionResult>("/api/extract-bill-collection", billFiles);
-      setBillForm(billToForm(result.combined_bill));
-      setMonthlyBills(result.bills);
+      const result = await uploadFiles<BillExtractionResult>("/api/extract-bill-collection", billFiles, proposalRunId);
+      if (result.runId) {
+        setProposalRunId(result.runId);
+      }
+      setBillForm(billToForm(result.data.combined_bill));
+      setMonthlyBills(result.data.bills);
       setPreview(null);
       setStatus({
-        tone: result.warnings.length ? "warn" : "ok",
-        text: result.warnings[0] || "Utility bill extraction complete.",
+        tone: result.data.warnings.length ? "warn" : "ok",
+        text: result.data.warnings[0] || "Utility bill extraction complete.",
       });
     } catch (error) {
       setStatus({ tone: "error", text: error instanceof Error ? error.message : "Bill extraction failed." });
@@ -392,8 +417,11 @@ export default function ProposalWorkspace() {
     setBusy("client");
     setStatus(null);
     try {
-      const result = await uploadFiles<ClientInfoDraft>("/api/extract-client-info", clientFiles);
-      setClientForm(clientToForm(result));
+      const result = await uploadFiles<ClientInfoDraft>("/api/extract-client-info", clientFiles, proposalRunId);
+      if (result.runId) {
+        setProposalRunId(result.runId);
+      }
+      setClientForm(clientToForm(result.data));
       setPreview(null);
       setStatus({ tone: "ok", text: "Client extraction complete." });
     } catch (error) {
@@ -458,11 +486,15 @@ export default function ProposalWorkspace() {
     try {
       const response = await fetch("/api/calculate-preview", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(proposalRunId, true),
         body: JSON.stringify(buildPayload()),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response));
+      }
+      const nextRunId = response.headers.get("x-proposal-run-id");
+      if (nextRunId) {
+        setProposalRunId(nextRunId);
       }
       setPreview((await response.json()) as CalcResult);
       setStatus({ tone: "ok", text: "Economics preview ready." });
@@ -483,11 +515,15 @@ export default function ProposalWorkspace() {
     try {
       const response = await fetch("/api/generate-proposal", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(proposalRunId, true),
         body: JSON.stringify(buildPayload()),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response));
+      }
+      const nextRunId = response.headers.get("x-proposal-run-id");
+      if (nextRunId) {
+        setProposalRunId(nextRunId);
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -522,7 +558,7 @@ export default function ProposalWorkspace() {
         <div className="sideFooter">
           <span>FastAPI</span>
           <span>React</span>
-          <span>Supabase-ready</span>
+          <span>Supabase</span>
         </div>
       </aside>
 
