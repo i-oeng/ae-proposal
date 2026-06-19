@@ -20,7 +20,7 @@ LLMs are used only for extraction and narrative. Python owns all financial and e
 
 Financial and engineering calculations are implemented in `core/calc_engine.py` and covered by pytest tests. Claude is never allowed to calculate, modify, estimate, or improve the numbers. This keeps the proposal auditable and makes the assumptions appendix defensible for CFO review.
 
-## Why V1 Uses A Facts Pack Instead Of Full RAG
+## Why Not Use Full RAG
 
 V1 intentionally avoids embeddings, chunking, vector databases, and retrieval ranking. The approved Markdown facts in `knowledge_base/` are small enough to inject directly into the narrative prompt. This prevents hallucinated Aspan-specific claims while avoiding unnecessary RAG complexity. Full RAG is a v2 feature once there is a larger proposal library.
 
@@ -151,7 +151,7 @@ ui/                   Streamlit demo app
 - The generated PowerPoint uses editable native shapes, text, tables, and charts.
 - The placeholder template includes TODO metadata until official brand assets are provided.
 
-## V2 Roadmap
+## Future Improvements
 
 1. Full RAG over a large library of past proposals
 2. User authentication
