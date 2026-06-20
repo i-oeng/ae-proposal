@@ -1,0 +1,17 @@
+.git
+.pytest_cache
+.venv
+.vscode
+cache
+logs/*.log
+logs/fastapi-dev*.log
+frontend/.next
+frontend/node_modules
+frontend/tsconfig.tsbuildinfo
+outputs/*.pptx
+test
+/neskao_*.pptx
+/panel.jpg
+/panel2.jpg
+__pycache__
+*.pyc

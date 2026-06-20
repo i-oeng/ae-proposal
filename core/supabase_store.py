@@ -156,7 +156,75 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return list(result.data or [])
+        runs = list(result.data or [])
+        run_ids = [run["id"] for run in runs if run.get("id")]
+        if not run_ids:
+            return runs
+
+        documents_result = (
+            self.client.table("documents")
+            .select("id,proposal_run_id,kind,file_name,storage_bucket,storage_path,extraction_json,created_at")
+            .in_("proposal_run_id", run_ids)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        outputs_result = (
+            self.client.table("proposal_outputs")
+            .select("id,proposal_run_id,storage_bucket,storage_path,file_name,created_at")
+            .in_("proposal_run_id", run_ids)
+            .order("created_at", desc=False)
+            .execute()
+        )
+
+        documents_by_run: dict[str, list[dict[str, Any]]] = {run_id: [] for run_id in run_ids}
+        for document in documents_result.data or []:
+            documents_by_run.setdefault(document["proposal_run_id"], []).append(document)
+
+        outputs_by_run: dict[str, list[dict[str, Any]]] = {run_id: [] for run_id in run_ids}
+        for output in outputs_result.data or []:
+            outputs_by_run.setdefault(output["proposal_run_id"], []).append(output)
+
+        for run in runs:
+            run_id = run.get("id")
+            run["documents"] = documents_by_run.get(run_id, [])
+            run["proposal_outputs"] = outputs_by_run.get(run_id, [])
+        return runs
+
+    def get_stored_file(self, table: str, run_id: str, file_id: str) -> dict[str, Any] | None:
+        if table not in {"documents", "proposal_outputs"}:
+            raise ValueError(f"Unsupported storage table: {table}")
+
+        result = (
+            self.client.table(table)
+            .select("id,proposal_run_id,storage_bucket,storage_path,file_name")
+            .eq("id", file_id)
+            .eq("proposal_run_id", run_id)
+            .limit(1)
+            .execute()
+        )
+        rows = list(result.data or [])
+        return rows[0] if rows else None
+
+    def download_stored_file(self, table: str, run_id: str, file_id: str) -> tuple[bytes, str, str] | None:
+        stored_file = self.get_stored_file(table, run_id, file_id)
+        if not stored_file:
+            return None
+
+        raw_content = self.client.storage.from_(stored_file["storage_bucket"]).download(stored_file["storage_path"])
+        if isinstance(raw_content, bytes):
+            content = raw_content
+        elif isinstance(raw_content, bytearray):
+            content = bytes(raw_content)
+        elif hasattr(raw_content, "content"):
+            content = bytes(raw_content.content)
+        elif hasattr(raw_content, "read"):
+            content = bytes(raw_content.read())
+        else:
+            content = bytes(raw_content)
+
+        file_name = str(stored_file["file_name"])
+        content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        return content, file_name, content_type
 
     def _upload_file(self, bucket: str, storage_path: str, file_path: Path) -> None:
         content_type = mimetypes.guess_type(file_path.name)[0]
@@ -260,3 +328,19 @@ def safe_list_proposal_runs(store: SupabaseStore | None, limit: int = 25) -> lis
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not list Supabase proposal runs: %s", exc)
         return []
+
+
+def safe_download_stored_file(
+    store: SupabaseStore | None,
+    table: str,
+    run_id: str,
+    file_id: str,
+) -> tuple[bytes, str, str] | None:
+    if store is None:
+        return None
+
+    try:
+        return store.download_stored_file(table, run_id, file_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not download stored file %s/%s: %s", table, file_id, exc)
+        return None

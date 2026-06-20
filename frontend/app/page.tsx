@@ -2,11 +2,13 @@
 
 import {
   AlertCircle,
+  ArrowUp,
   Building2,
   Calculator,
   CheckCircle2,
   Download,
   FileText,
+  FolderOpen,
   History,
   LayoutDashboard,
   Loader2,
@@ -16,7 +18,7 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type TariffPeriod = {
   label: string;
@@ -66,12 +68,6 @@ type ClientInfoDraft = {
   diesel_price_per_liter_override: number | null;
   extraction_notes: string[];
   field_confidence: Record<string, number>;
-};
-
-type DocumentExtractionResult = {
-  bill: BillExtractionResult | null;
-  client: ClientInfoDraft | null;
-  warnings: string[];
 };
 
 type ScenarioResult = {
@@ -147,6 +143,11 @@ type Status = {
   text: string;
 };
 
+type ExtractionState = {
+  phase: "idle" | "extracting" | "done" | "error";
+  text: string;
+};
+
 type ApiResult<T> = {
   data: T;
   runId: string | null;
@@ -161,15 +162,38 @@ type HistoryClient = {
   city?: string | null;
 };
 
+type HistoryDocument = {
+  id: string;
+  kind: string;
+  file_name: string;
+  extraction_json?: unknown;
+  created_at?: string | null;
+};
+
+type HistoryProposalOutput = {
+  id: string;
+  file_name: string;
+  created_at?: string | null;
+};
+
+type HistoryNoteGroup = {
+  title: string;
+  meta: string;
+  items: string[];
+  tone?: "warning";
+};
+
 type HistoryRun = {
   id: string;
   status?: string | null;
   created_at?: string | null;
   client_json?: Partial<ClientInfoDraft> | null;
-  bill_json?: unknown;
-  calc_json?: unknown;
+  bill_json?: Partial<BillExtractionResult> | Partial<BillData> | null;
+  calc_json?: Partial<CalcResult> | null;
   warnings?: string[] | null;
   clients?: HistoryClient | null;
+  documents?: HistoryDocument[] | null;
+  proposal_outputs?: HistoryProposalOutput[] | null;
 };
 
 const emptyBillForm: BillForm = {
@@ -207,6 +231,11 @@ const emptyClientForm: ClientForm = {
   field_confidence: {},
 };
 
+const idleExtraction: ExtractionState = {
+  phase: "idle",
+  text: "Waiting for files",
+};
+
 const industries = [
   { value: "manufacturing", label: "Manufacturing" },
   { value: "cold_storage", label: "Cold storage" },
@@ -228,6 +257,12 @@ const moneyFormat = new Intl.NumberFormat("en-US", {
 const tariffFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4,
 });
+
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+
+function apiUrl(path: string): string {
+  return `${apiBaseUrl}${path}`;
+}
 
 function asText(value: string | number | null | undefined): string {
   if (value === null || value === undefined) {
@@ -321,24 +356,37 @@ function apiHeaders(runId: string | null, contentType = false): Record<string, s
   return headers;
 }
 
-async function uploadDocumentSet(
-  billFiles: File[],
-  clientFiles: File[],
+async function reserveProposalRun(signal: AbortSignal): Promise<string | null> {
+  const response = await fetch(apiUrl("/proposal-runs"), {
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  const body = (await response.json()) as { run_id?: string | null };
+  return body.run_id || response.headers.get("x-proposal-run-id");
+}
+
+async function uploadFiles<T>(
+  path: string,
+  files: File[],
   runId: string | null,
-): Promise<ApiResult<DocumentExtractionResult>> {
+  signal: AbortSignal,
+): Promise<ApiResult<T>> {
   const formData = new FormData();
-  billFiles.forEach((file) => formData.append("bill_files", file));
-  clientFiles.forEach((file) => formData.append("client_files", file));
-  const response = await fetch("/api/extract-documents", {
+  files.forEach((file) => formData.append("files", file));
+  const response = await fetch(apiUrl(path), {
     method: "POST",
     headers: apiHeaders(runId),
     body: formData,
+    signal,
   });
   if (!response.ok) {
     throw new Error(await readApiError(response));
   }
   return {
-    data: (await response.json()) as DocumentExtractionResult,
+    data: (await response.json()) as T,
     runId: response.headers.get("x-proposal-run-id"),
   };
 }
@@ -360,17 +408,6 @@ function fileLabel(files: File[]): string {
     return files[0].name;
   }
   return `${files.length} files selected`;
-}
-
-function intakeSummary(billFiles: File[], clientFiles: File[]): string {
-  const parts = [];
-  if (billFiles.length) {
-    parts.push(`${billFiles.length} bill${billFiles.length === 1 ? "" : "s"}`);
-  }
-  if (clientFiles.length) {
-    parts.push(`${clientFiles.length} client file${clientFiles.length === 1 ? "" : "s"}`);
-  }
-  return parts.length ? parts.join(" + ") : "No files selected";
 }
 
 function filenameFromDisposition(disposition: string | null): string {
@@ -401,6 +438,319 @@ function historyCountry(run: HistoryRun): string {
   return run.clients?.country || run.client_json?.country || "-";
 }
 
+function historyBillSnapshot(run: HistoryRun): { combined: Partial<BillData> | null; bills: Partial<BillData>[] } {
+  const raw = run.bill_json;
+  if (!raw || typeof raw !== "object") {
+    return { combined: null, bills: [] };
+  }
+
+  if ("combined_bill" in raw) {
+    const extraction = raw as Partial<BillExtractionResult>;
+    const bills = Array.isArray(extraction.bills) ? extraction.bills : [];
+    return {
+      combined: extraction.combined_bill || bills[0] || null,
+      bills,
+    };
+  }
+
+  if ("monthly_kwh" in raw) {
+    const bill = raw as Partial<BillData>;
+    return { combined: bill, bills: [bill] };
+  }
+
+  return { combined: null, bills: [] };
+}
+
+function historyClientSnapshot(run: HistoryRun): ClientInfoDraft {
+  return {
+    client_name: run.client_json?.client_name || run.clients?.client_name || null,
+    industry: run.client_json?.industry || run.clients?.industry || null,
+    country: run.client_json?.country || run.clients?.country || null,
+    city: run.client_json?.city || run.clients?.city || null,
+    business_description: run.client_json?.business_description || null,
+    has_diesel_generators: run.client_json?.has_diesel_generators ?? null,
+    grid_connection_kva: run.client_json?.grid_connection_kva ?? null,
+    available_roof_area_m2: run.client_json?.available_roof_area_m2 ?? null,
+    latitude: run.client_json?.latitude ?? null,
+    longitude: run.client_json?.longitude ?? null,
+    daytime_fraction_override: run.client_json?.daytime_fraction_override ?? null,
+    ppa_tariff_per_kwh_override: run.client_json?.ppa_tariff_per_kwh_override ?? null,
+    diesel_price_per_liter_override: run.client_json?.diesel_price_per_liter_override ?? null,
+    extraction_notes: run.client_json?.extraction_notes || [],
+    field_confidence: run.client_json?.field_confidence || {},
+  };
+}
+
+function historyBillToForm(bill: Partial<BillData> | null): BillForm {
+  if (!bill) {
+    return emptyBillForm;
+  }
+  const fallback = bill.tariff_basis ? String(bill.tariff_basis).toLowerCase().includes("fallback") : false;
+  return {
+    monthly_kwh: fallback ? "" : asText(bill.monthly_kwh),
+    currency: fallback ? "" : asText(bill.currency),
+    total_cost: fallback ? "" : asText(bill.total_cost),
+    tariff_per_kwh: fallback ? "" : asText(bill.tariff_per_kwh),
+    billing_period_start: asText(bill.billing_period_start),
+    billing_period_end: asText(bill.billing_period_end),
+    active_energy_charge: fallback ? "" : asText(bill.active_energy_charge),
+    penalties: fallback ? "" : asText(bill.penalties),
+    taxes_and_fees: fallback ? "" : asText(bill.taxes_and_fees),
+    fixed_or_demand_charges: fallback ? "" : asText(bill.fixed_or_demand_charges),
+    tariff_basis: fallback ? "" : asText(bill.tariff_basis),
+    tariff_periods: fallback
+      ? []
+      : (bill.tariff_periods || []).map((period) => ({
+          label: asText(period.label),
+          kwh: asText(period.kwh),
+          unit_price_per_kwh: asText(period.unit_price_per_kwh),
+          energy_charge: asText(period.energy_charge),
+          confidence: asText(period.confidence),
+        })),
+    extraction_notes: bill.extraction_notes || [],
+    field_confidence: bill.field_confidence || {},
+  };
+}
+
+function isCompleteBillData(bill: Partial<BillData>): bill is BillData {
+  return (
+    typeof bill.monthly_kwh === "number" &&
+    typeof bill.total_cost === "number" &&
+    typeof bill.tariff_per_kwh === "number" &&
+    typeof bill.currency === "string" &&
+    typeof bill.tariff_basis === "string"
+  );
+}
+
+function isCompleteCalcResult(calc: Partial<CalcResult> | null | undefined): calc is CalcResult {
+  return Boolean(
+    calc &&
+      calc.pv_recommendation &&
+      calc.scenario_grid_replacement &&
+      calc.scenario_grid_diesel &&
+      typeof calc.annual_solar_production_kwh === "number",
+  );
+}
+
+function formatNumberValue(value: number | null | undefined, suffix = ""): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${numberFormat.format(value)}${suffix}` : "-";
+}
+
+function formatMoneyValue(currency: string | null | undefined, value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${currency || ""} ${moneyFormat.format(value)}`.trim()
+    : "-";
+}
+
+function formatTariffValue(currency: string | null | undefined, value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${currency || ""} ${tariffFormat.format(value)}/kWh`.trim()
+    : "-";
+}
+
+function formatBooleanValue(value: boolean | null | undefined): string {
+  if (value === true) {
+    return "Yes";
+  }
+  if (value === false) {
+    return "No";
+  }
+  return "-";
+}
+
+function formatTextValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  return String(value).replaceAll("_", " ");
+}
+
+function historyDownloadUrl(runId: string, group: "documents" | "proposal-outputs", fileId: string): string {
+  return apiUrl(`/proposal-runs/${runId}/${group}/${fileId}/download`);
+}
+
+function fileKindLabel(kind: string): string {
+  return kind.replaceAll("_", " ");
+}
+
+function readableFieldLabel(field: string): string {
+  const labels: Record<string, string> = {
+    active_energy_charge: "Active energy charge",
+    available_roof_area_m2: "Available roof area",
+    business_description: "Business description",
+    client_name: "Client name",
+    diesel_price_per_liter_override: "Diesel price override",
+    fixed_or_demand_charges: "Fixed or demand charges",
+    grid_connection_kva: "Grid connection kVA",
+    has_diesel_generators: "Diesel generators",
+    monthly_kwh: "Monthly kWh",
+    ppa_tariff_per_kwh_override: "PPA tariff override",
+    tariff_per_kwh: "Tariff per kWh",
+    tariff_periods: "Time-of-use rows",
+    taxes_and_fees: "Taxes and fees",
+    total_cost: "Total cost",
+  };
+  return labels[field] || field.replaceAll("_", " ");
+}
+
+function confidenceEntries(fieldConfidence: Record<string, number>): { label: string; percent: number }[] {
+  return Object.entries(fieldConfidence)
+    .filter(([, value]) => Number.isFinite(value))
+    .map(([field, value]) => ({
+      label: readableFieldLabel(field),
+      percent: Math.round(value * 100),
+    }))
+    .sort((left, right) => left.percent - right.percent);
+}
+
+function readableHistoryNote(note: string): string {
+  return note
+    .replace(/\bmonthly_kwh\b/gi, "monthly kWh")
+    .replace(/\btotal_cost\b/gi, "total cost")
+    .replace(/\btariff_per_kwh\b/gi, "tariff per kWh")
+    .replace(/\bactive_energy_charge\b/gi, "active energy charge")
+    .replace(/\btaxes_and_fees\b/gi, "taxes and fees")
+    .replace(/\bfixed_or_demand_charges\b/gi, "fixed or demand charges")
+    .replace(/\bhas_diesel_generators\b/gi, "diesel generator status")
+    .replace(/\bgrid_connection_kva\b/gi, "grid connection kVA")
+    .replace(/\bavailable_roof_area_m2\b/gi, "available roof area m2")
+    .replace(/\bppa_tariff_per_kwh_override\b/gi, "PPA tariff override")
+    .replace(/\bdiesel_price_per_liter_override\b/gi, "diesel price override")
+    .replace(/\bdaytime_fraction_override\b/gi, "daytime fraction override")
+    .replace(/\bkwp\b/gi, "kWp")
+    .replace(/\bkwh\b/gi, "kWh")
+    .replace(/\bkva\b/gi, "kVA")
+    .replace(/\bxof\b/gi, "XOF")
+    .replace(/\bfcfa\b/gi, "FCFA")
+    .replace(/\btva\b/gi, "TVA")
+    .replace(/\bhta\b/gi, "HTA")
+    .replace(/\bttc\b/gi, "TTC")
+    .replace(/\bht\b/g, "HT")
+    .replaceAll("_", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueNotes(notes: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  notes.forEach((note) => {
+    const readable = readableHistoryNote(note);
+    const key = readable.toLowerCase().replace(/[^\w]+/g, " ").trim();
+    if (!readable || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    cleaned.push(readable);
+  });
+  return cleaned;
+}
+
+function billCoverageLabel(bills: Partial<BillData>[]): string {
+  const starts = bills.map((bill) => bill.billing_period_start).filter(Boolean).sort();
+  const ends = bills.map((bill) => bill.billing_period_end).filter(Boolean).sort();
+  if (starts.length === 0 && ends.length === 0) {
+    return "";
+  }
+  return `${starts[0] || "-"} to ${ends[ends.length - 1] || "-"}`;
+}
+
+function hasNote(notes: string[], pattern: RegExp): boolean {
+  return notes.some((note) => pattern.test(note));
+}
+
+function buildHistoryNoteGroups(
+  run: HistoryRun,
+  billSnapshot: { combined: Partial<BillData> | null; bills: Partial<BillData>[] },
+  client: Partial<ClientInfoDraft>,
+): HistoryNoteGroup[] {
+  const bill = billSnapshot.combined;
+  const billNotes = bill?.extraction_notes || [];
+  const clientNotes = client.extraction_notes || [];
+  const warningNotes = run.warnings || [];
+  const groups: HistoryNoteGroup[] = [];
+  const billCount = billSnapshot.bills.length || (bill ? 1 : 0);
+
+  const billItems: string[] = [];
+  if (hasNote(billNotes, /periode de consommation|billing period|payment due date/i)) {
+    const coverage = billCoverageLabel(billSnapshot.bills);
+    billItems.push(
+      `${billCount || "Uploaded"} bill${billCount === 1 ? "" : "s"} reviewed${
+        coverage ? `, covering ${coverage}` : ""
+      }. Consumption periods are used for billing dates; payment due dates are ignored.`,
+    );
+  }
+  if (hasNote(billNotes, /reactif|ima|horaire|excluded/i)) {
+    billItems.push("Reactive energy, Ima, and meter-index rows are excluded from active kWh.");
+  }
+  if (hasNote(billNotes, /weighted average|tariff per kwh|tariff_per_kwh|prix unitaire|unit prices/i)) {
+    billItems.push(
+      `Tariff values are derived from active energy rows or invoice active-energy totals. Reviewed tariff basis: ${formatTextValue(
+        bill?.tariff_basis,
+      )}.`,
+    );
+  }
+  if (hasNote(billNotes, /penalite|penalt|tva|taxes|fixed|demand|prime fixe|location comptage|redevance/i)) {
+    billItems.push(
+      "Active energy, penalties, taxes, and fixed or demand charges are tracked separately when visible on the bill.",
+    );
+  }
+  if (billItems.length > 0) {
+    groups.push({
+      title: "Bill interpretation",
+      meta: `${billCount || 0} bill${billCount === 1 ? "" : "s"}`,
+      items: uniqueNotes(billItems),
+    });
+  }
+
+  const reviewFlags = uniqueNotes(
+    billNotes.filter((note) => /partially|obscured|unreadable|ambiguity|possible|differ|unpaid|seasonality/i.test(note)),
+  );
+  if (reviewFlags.length > 0) {
+    groups.push({
+      title: "Review flags",
+      meta: `${reviewFlags.length} item${reviewFlags.length === 1 ? "" : "s"}`,
+      tone: "warning",
+      items: reviewFlags.slice(0, 6),
+    });
+  }
+
+  const clientItems = uniqueNotes(clientNotes);
+  if (clientItems.length > 0) {
+    groups.push({
+      title: "Client extraction",
+      meta: `${clientItems.length} item${clientItems.length === 1 ? "" : "s"}`,
+      items:
+        clientItems.length > 10
+          ? [...clientItems.slice(0, 10), `${clientItems.length - 10} additional client extraction details are in the document snapshots.`]
+          : clientItems,
+    });
+  }
+
+  const warnings = uniqueNotes(warningNotes);
+  if (warnings.length > 0) {
+    groups.push({
+      title: "Warnings",
+      meta: `${warnings.length} warning${warnings.length === 1 ? "" : "s"}`,
+      tone: "warning",
+      items: warnings,
+    });
+  }
+
+  if (groups.length === 0) {
+    const fallback = uniqueNotes([...billNotes, ...clientNotes, ...warningNotes]);
+    if (fallback.length > 0) {
+      groups.push({
+        title: "Extraction notes",
+        meta: `${fallback.length} item${fallback.length === 1 ? "" : "s"}`,
+        items: fallback.slice(0, 12),
+      });
+    }
+  }
+
+  return groups;
+}
+
 export default function ProposalWorkspace() {
   const [billFiles, setBillFiles] = useState<File[]>([]);
   const [clientFiles, setClientFiles] = useState<File[]>([]);
@@ -409,12 +759,22 @@ export default function ProposalWorkspace() {
   const [monthlyBills, setMonthlyBills] = useState<BillData[]>([]);
   const [preview, setPreview] = useState<CalcResult | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [busy, setBusy] = useState<"all" | "preview" | "proposal" | null>(null);
+  const [busy, setBusy] = useState<"preview" | "proposal" | null>(null);
+  const [billExtraction, setBillExtraction] = useState<ExtractionState>(idleExtraction);
+  const [clientExtraction, setClientExtraction] = useState<ExtractionState>(idleExtraction);
   const [proposalRunId, setProposalRunId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("workspace");
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [resetKey, setResetKey] = useState(0);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const runIdRef = useRef<string | null>(null);
+  const runPromiseRef = useRef<Promise<string | null> | null>(null);
+  const runReservationAbortRef = useRef<AbortController | null>(null);
+  const billRequestRef = useRef<AbortController | null>(null);
+  const clientRequestRef = useRef<AbortController | null>(null);
+  const billRequestSequence = useRef(0);
+  const clientRequestSequence = useRef(0);
 
   const canPreview = useMemo(() => {
     return (
@@ -438,7 +798,7 @@ export default function ProposalWorkspace() {
   async function loadHistory() {
     setHistoryLoading(true);
     try {
-      const response = await fetch("/api/proposal-runs?limit=25");
+      const response = await fetch(apiUrl("/proposal-runs?limit=25"));
       if (!response.ok) {
         throw new Error(await readApiError(response));
       }
@@ -458,7 +818,67 @@ export default function ProposalWorkspace() {
     }
   }, [activeView]);
 
+  useEffect(() => {
+    function onScroll() {
+      setShowScrollTop(window.scrollY > 520);
+    }
+
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      runReservationAbortRef.current?.abort();
+      billRequestRef.current?.abort();
+      clientRequestRef.current?.abort();
+    };
+  }, []);
+
+  function rememberRunId(runId: string | null) {
+    if (!runId) {
+      return;
+    }
+    runIdRef.current = runId;
+    setProposalRunId(runId);
+  }
+
+  async function ensureProposalRun(): Promise<string | null> {
+    if (runIdRef.current) {
+      return runIdRef.current;
+    }
+    if (!runPromiseRef.current) {
+      const controller = new AbortController();
+      runReservationAbortRef.current = controller;
+      runPromiseRef.current = reserveProposalRun(controller.signal);
+    }
+
+    const pending = runPromiseRef.current;
+    try {
+      const runId = await pending;
+      rememberRunId(runId);
+      return runId;
+    } finally {
+      if (runPromiseRef.current === pending) {
+        runPromiseRef.current = null;
+        runReservationAbortRef.current = null;
+      }
+    }
+  }
+
+  function scrollToTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function resetWorkspace() {
+    runReservationAbortRef.current?.abort();
+    billRequestRef.current?.abort();
+    clientRequestRef.current?.abort();
+    billRequestSequence.current += 1;
+    clientRequestSequence.current += 1;
+    runIdRef.current = null;
+    runPromiseRef.current = null;
     setBillFiles([]);
     setClientFiles([]);
     setBillForm(emptyBillForm);
@@ -467,49 +887,150 @@ export default function ProposalWorkspace() {
     setPreview(null);
     setStatus(null);
     setBusy(null);
+    setBillExtraction(idleExtraction);
+    setClientExtraction(idleExtraction);
     setProposalRunId(null);
     setResetKey((value) => value + 1);
   }
 
+  function loadHistoryRun(run: HistoryRun) {
+    runReservationAbortRef.current?.abort();
+    billRequestRef.current?.abort();
+    clientRequestRef.current?.abort();
+    billRequestSequence.current += 1;
+    clientRequestSequence.current += 1;
+    runPromiseRef.current = null;
+    runIdRef.current = run.id;
+    const billSnapshot = historyBillSnapshot(run);
+    const client = historyClientSnapshot(run);
+    const bills = billSnapshot.bills.filter(isCompleteBillData);
+
+    setBillFiles([]);
+    setClientFiles([]);
+    setBillForm(historyBillToForm(billSnapshot.combined));
+    setClientForm(clientToForm(client));
+    setMonthlyBills(bills);
+    setPreview(isCompleteCalcResult(run.calc_json) ? run.calc_json : null);
+    setProposalRunId(run.id);
+    setBusy(null);
+    setBillExtraction({ phase: bills.length ? "done" : "idle", text: bills.length ? `${bills.length} bills loaded` : "Waiting for files" });
+    setClientExtraction({
+      phase: client.client_name ? "done" : "idle",
+      text: client.client_name ? "Client details loaded" : "Waiting for files",
+    });
+    setResetKey((value) => value + 1);
+    setActiveView("workspace");
+    setStatus({
+      tone: "ok",
+      text: `Loaded ${historyClientName(run)} from history. Review the fields before regenerating.`,
+    });
+  }
+
   function onBillFiles(event: ChangeEvent<HTMLInputElement>) {
-    setBillFiles(Array.from(event.target.files || []));
+    const files = Array.from(event.target.files || []);
+    setBillFiles(files);
+    setBillForm(emptyBillForm);
+    setMonthlyBills([]);
     setPreview(null);
+    if (files.length === 0) {
+      setBillExtraction(idleExtraction);
+      return;
+    }
+    void extractBills(files);
   }
 
   function onClientFiles(event: ChangeEvent<HTMLInputElement>) {
-    setClientFiles(Array.from(event.target.files || []));
+    const files = Array.from(event.target.files || []);
+    setClientFiles(files);
+    setClientForm(emptyClientForm);
     setPreview(null);
-  }
-
-  async function extractAllDocuments() {
-    if (billFiles.length === 0 && clientFiles.length === 0) {
-      setStatus({ tone: "warn", text: "Select utility bills or client documents first." });
+    if (files.length === 0) {
+      setClientExtraction(idleExtraction);
       return;
     }
-    setBusy("all");
+    void extractClient(files);
+  }
+
+  async function extractBills(files: File[]) {
+    billRequestRef.current?.abort();
+    const controller = new AbortController();
+    const sequence = billRequestSequence.current + 1;
+    billRequestSequence.current = sequence;
+    billRequestRef.current = controller;
+    setBillExtraction({
+      phase: "extracting",
+      text: `Extracting ${files.length} bill${files.length === 1 ? "" : "s"}`,
+    });
     setStatus(null);
     try {
-      const result = await uploadDocumentSet(billFiles, clientFiles, proposalRunId);
-      if (result.runId) {
-        setProposalRunId(result.runId);
+      const runId = await ensureProposalRun();
+      if (sequence !== billRequestSequence.current) {
+        return;
       }
-      if (result.data.bill) {
-        setBillForm(billToForm(result.data.bill.combined_bill));
-        setMonthlyBills(result.data.bill.bills);
+      const result = await uploadFiles<BillExtractionResult>("/extract-bill-collection", files, runId, controller.signal);
+      if (sequence !== billRequestSequence.current) {
+        return;
       }
-      if (result.data.client) {
-        setClientForm(clientToForm(result.data.client));
-      }
-
+      rememberRunId(result.runId);
+      setBillForm(billToForm(result.data.combined_bill));
+      setMonthlyBills(result.data.bills);
       setPreview(null);
-      setStatus({
-        tone: result.data.warnings.length ? "warn" : "ok",
-        text: result.data.warnings[0] || "Document extraction complete.",
+      setBillExtraction({
+        phase: "done",
+        text: `${result.data.bills.length} bill${result.data.bills.length === 1 ? "" : "s"} extracted`,
       });
+      if (result.data.warnings.length) {
+        setStatus({ tone: "warn", text: result.data.warnings[0] });
+      }
     } catch (error) {
-      setStatus({ tone: "error", text: error instanceof Error ? error.message : "Document extraction failed." });
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Bill extraction failed.";
+      setBillExtraction({ phase: "error", text: message });
+      setStatus({ tone: "error", text: message });
     } finally {
-      setBusy(null);
+      if (billRequestRef.current === controller) {
+        billRequestRef.current = null;
+      }
+    }
+  }
+
+  async function extractClient(files: File[]) {
+    clientRequestRef.current?.abort();
+    const controller = new AbortController();
+    const sequence = clientRequestSequence.current + 1;
+    clientRequestSequence.current = sequence;
+    clientRequestRef.current = controller;
+    setClientExtraction({
+      phase: "extracting",
+      text: `Extracting ${files.length} client file${files.length === 1 ? "" : "s"}`,
+    });
+    setStatus(null);
+    try {
+      const runId = await ensureProposalRun();
+      if (sequence !== clientRequestSequence.current) {
+        return;
+      }
+      const result = await uploadFiles<ClientInfoDraft>("/extract-client-info", files, runId, controller.signal);
+      if (sequence !== clientRequestSequence.current) {
+        return;
+      }
+      rememberRunId(result.runId);
+      setClientForm(clientToForm(result.data));
+      setPreview(null);
+      setClientExtraction({ phase: "done", text: "Client details extracted" });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Client extraction failed.";
+      setClientExtraction({ phase: "error", text: message });
+      setStatus({ tone: "error", text: message });
+    } finally {
+      if (clientRequestRef.current === controller) {
+        clientRequestRef.current = null;
+      }
     }
   }
 
@@ -566,7 +1087,7 @@ export default function ProposalWorkspace() {
     setBusy("preview");
     setStatus(null);
     try {
-      const response = await fetch("/api/calculate-preview", {
+      const response = await fetch(apiUrl("/calculate-preview"), {
         method: "POST",
         headers: apiHeaders(proposalRunId, true),
         body: JSON.stringify(buildPayload()),
@@ -575,9 +1096,7 @@ export default function ProposalWorkspace() {
         throw new Error(await readApiError(response));
       }
       const nextRunId = response.headers.get("x-proposal-run-id");
-      if (nextRunId) {
-        setProposalRunId(nextRunId);
-      }
+      rememberRunId(nextRunId);
       setPreview((await response.json()) as CalcResult);
       setStatus({ tone: "ok", text: "Economics preview ready." });
     } catch (error) {
@@ -595,7 +1114,7 @@ export default function ProposalWorkspace() {
     setBusy("proposal");
     setStatus(null);
     try {
-      const response = await fetch("/api/generate-proposal", {
+      const response = await fetch(apiUrl("/generate-proposal"), {
         method: "POST",
         headers: apiHeaders(proposalRunId, true),
         body: JSON.stringify(buildPayload()),
@@ -604,9 +1123,7 @@ export default function ProposalWorkspace() {
         throw new Error(await readApiError(response));
       }
       const nextRunId = response.headers.get("x-proposal-run-id");
-      if (nextRunId) {
-        setProposalRunId(nextRunId);
-      }
+      rememberRunId(nextRunId);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -700,6 +1217,7 @@ export default function ProposalWorkspace() {
                 accept=".pdf,image/*"
                 multiple
                 onFiles={onBillFiles}
+                extraction={billExtraction}
               />
               <UploadPanel
                 icon={<Building2 aria-hidden="true" />}
@@ -709,21 +1227,8 @@ export default function ProposalWorkspace() {
                 accept=".pdf,.pptx,image/*"
                 multiple
                 onFiles={onClientFiles}
+                extraction={clientExtraction}
               />
-            </section>
-
-            <section className="commandStrip extractionStrip" aria-label="Combined extraction controls">
-              <button
-                className="primaryButton"
-                type="button"
-                onClick={extractAllDocuments}
-                disabled={busy === "all" || (billFiles.length === 0 && clientFiles.length === 0)}
-                title="Extract selected utility and client documents"
-              >
-                {busy === "all" ? <Loader2 className="spin" aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
-                Extract documents
-              </button>
-              <span className="requirementState">{intakeSummary(billFiles, clientFiles)}</span>
             </section>
 
             {monthlyBills.length > 0 ? <BillSummary bills={monthlyBills} /> : null}
@@ -768,9 +1273,21 @@ export default function ProposalWorkspace() {
             monthlyBills={monthlyBills}
             preview={preview}
             canPreview={canPreview}
+            onLoadRun={loadHistoryRun}
           />
         )}
       </section>
+      <button
+        className={showScrollTop ? "scrollTopButton visible" : "scrollTopButton"}
+        type="button"
+        onClick={scrollToTop}
+        aria-label="Back to top"
+        aria-hidden={!showScrollTop}
+        tabIndex={showScrollTop ? 0 : -1}
+        title="Back to top"
+      >
+        <ArrowUp aria-hidden="true" />
+      </button>
     </main>
   );
 }
@@ -782,6 +1299,7 @@ function DashboardHistory({
   monthlyBills,
   preview,
   canPreview,
+  onLoadRun,
 }: {
   runs: HistoryRun[];
   loading: boolean;
@@ -789,7 +1307,23 @@ function DashboardHistory({
   monthlyBills: BillData[];
   preview: CalcResult | null;
   canPreview: boolean;
+  onLoadRun: (run: HistoryRun) => void;
 }) {
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const selectedRun = runs.find((run) => run.id === selectedRunId) || runs[0] || null;
+  const totalOutputs = runs.reduce((total, run) => total + (run.proposal_outputs?.length || 0), 0);
+  const totalDocuments = runs.reduce((total, run) => total + (run.documents?.length || 0), 0);
+
+  useEffect(() => {
+    if (runs.length === 0) {
+      setSelectedRunId(null);
+      return;
+    }
+    if (!selectedRunId || !runs.some((run) => run.id === selectedRunId)) {
+      setSelectedRunId(runs[0].id);
+    }
+  }, [runs, selectedRunId]);
+
   return (
     <section className="historyStack" aria-label="Dashboard and proposal history">
       <section className="metricsBand dashboardMetrics" aria-label="Workspace summary">
@@ -800,8 +1334,8 @@ function DashboardHistory({
           label="Recommended PV"
           value={preview ? `${moneyFormat.format(preview.pv_recommendation.recommended_kwp)} kWp` : "-"}
         />
-        <Metric label="Saved runs" value={String(runs.length)} />
-        <Metric label="History" value={loading ? "Loading" : "Live"} />
+        <Metric label="Generated PPTX" value={String(totalOutputs)} />
+        <Metric label="Stored docs" value={String(totalDocuments)} />
       </section>
 
       <section className="historyPanel" aria-label="Proposal runs">
@@ -815,38 +1349,260 @@ function DashboardHistory({
             <strong>No saved proposal runs.</strong>
           </div>
         ) : (
-          <div className="tableScroller">
-            <table className="historyTable">
-              <thead>
-                <tr>
-                  <th>Client</th>
-                  <th>Country</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th>Run ID</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runs.map((run) => (
-                  <tr key={run.id}>
-                    <td>{historyClientName(run)}</td>
-                    <td>{historyCountry(run)}</td>
-                    <td>
-                      <span className={run.status === "generated" ? "statusPill generated" : "statusPill"}>
-                        {run.status || "draft"}
-                      </span>
-                    </td>
-                    <td>{formatRunDate(run.created_at)}</td>
-                    <td>
+          <div className="historyLayout">
+            <div className="historyList" role="list" aria-label="Saved proposal runs">
+              {runs.map((run) => {
+                const billSnapshot = historyBillSnapshot(run);
+                const selected = selectedRun?.id === run.id;
+                return (
+                  <button
+                    className={selected ? "historyRunButton active" : "historyRunButton"}
+                    type="button"
+                    key={run.id}
+                    onClick={() => setSelectedRunId(run.id)}
+                    aria-pressed={selected}
+                  >
+                    <span className="historyRunMain">
+                      <strong>{historyClientName(run)}</strong>
+                      <small>
+                        {historyCountry(run)} · {formatRunDate(run.created_at)}
+                      </small>
+                    </span>
+                    <span className={run.status === "generated" ? "statusPill generated" : "statusPill"}>
+                      {run.status || "draft"}
+                    </span>
+                    <span className="historyRunMeta">
                       <code>{run.id.slice(0, 8)}</code>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <small>
+                        {(run.proposal_outputs?.length || 0)} PPTX · {billSnapshot.bills.length} bill
+                        {billSnapshot.bills.length === 1 ? "" : "s"}
+                      </small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {selectedRun ? <HistoryRunDetail run={selectedRun} onLoadRun={onLoadRun} /> : null}
           </div>
         )}
       </section>
+    </section>
+  );
+}
+
+function HistoryRunDetail({ run, onLoadRun }: { run: HistoryRun; onLoadRun: (run: HistoryRun) => void }) {
+  const client = historyClientSnapshot(run);
+  const billSnapshot = historyBillSnapshot(run);
+  const bill = billSnapshot.combined;
+  const currency = bill?.currency || "";
+  const calc = run.calc_json;
+  const outputs = run.proposal_outputs || [];
+  const documents = run.documents || [];
+  const extractionDocuments = documents.filter((document) => document.extraction_json);
+  const noteGroups = buildHistoryNoteGroups(run, billSnapshot, client);
+  const visibleNoteCount = noteGroups.reduce((total, group) => total + group.items.length, 0);
+
+  return (
+    <article className="historyDetail" aria-label="Selected proposal run details">
+      <div className="historyDetailHero">
+        <div>
+          <span>Run {run.id.slice(0, 8)}</span>
+          <h3>{historyClientName(run)}</h3>
+          <p>
+            {formatRunDate(run.created_at)} · {formatTextValue(client.industry)} · {historyCountry(run)}
+          </p>
+        </div>
+        <div className="historyDetailActions">
+          <span className={run.status === "generated" ? "statusPill generated" : "statusPill"}>{run.status || "draft"}</span>
+          <button className="secondaryButton compactButton" type="button" onClick={() => onLoadRun(run)} title="Load run into workspace">
+            <FolderOpen aria-hidden="true" />
+            Load run
+          </button>
+        </div>
+      </div>
+
+      <section className="historyDetailBlock" aria-label="Stored files">
+        <div className="sectionHeader">
+          <h4>Files</h4>
+          <span>{outputs.length + documents.length} stored</span>
+        </div>
+        <div className="fileAccessGrid">
+          <div>
+            <strong>Generated proposal</strong>
+            {outputs.length === 0 ? <span className="miniEmpty">No PPTX saved yet.</span> : null}
+            {outputs.map((output) => (
+              <a
+                className="fileAccessLink"
+                href={historyDownloadUrl(run.id, "proposal-outputs", output.id)}
+                key={output.id}
+                download={output.file_name}
+              >
+                <Download aria-hidden="true" />
+                <span>{output.file_name}</span>
+              </a>
+            ))}
+          </div>
+          <div>
+            <strong>Source documents</strong>
+            {documents.length === 0 ? <span className="miniEmpty">No source documents saved.</span> : null}
+            {documents.map((document) => (
+              <a
+                className="fileAccessLink"
+                href={historyDownloadUrl(run.id, "documents", document.id)}
+                key={document.id}
+                download={document.file_name}
+              >
+                <FileText aria-hidden="true" />
+                <span>
+                  {document.file_name}
+                  <em>{fileKindLabel(document.kind)}</em>
+                </span>
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="historyValuesGrid">
+        <section className="historyDetailBlock" aria-label="Client extracted values">
+          <div className="sectionHeader">
+            <h4>Client values</h4>
+            <ConfidenceBadge value={client.field_confidence?.client_name} />
+          </div>
+          <dl className="detailRows">
+            <DetailRow label="Client" value={formatTextValue(client.client_name)} />
+            <DetailRow label="Industry" value={formatTextValue(client.industry)} />
+            <DetailRow label="Country" value={formatTextValue(client.country)} />
+            <DetailRow label="City" value={formatTextValue(client.city)} />
+            <DetailRow label="Diesel generators" value={formatBooleanValue(client.has_diesel_generators)} />
+            <DetailRow label="Grid capacity" value={formatNumberValue(client.grid_connection_kva, " kVA")} />
+            <DetailRow label="Roof area" value={formatNumberValue(client.available_roof_area_m2, " m2")} />
+          </dl>
+          {client.business_description ? <p className="historyDescription">{client.business_description}</p> : null}
+        </section>
+
+        <section className="historyDetailBlock" aria-label="Bill extracted values">
+          <div className="sectionHeader">
+            <h4>Bill values</h4>
+            <ConfidenceBadge value={bill?.field_confidence?.monthly_kwh} />
+          </div>
+          <dl className="detailRows">
+            <DetailRow label="Monthly kWh" value={formatNumberValue(bill?.monthly_kwh, " kWh")} />
+            <DetailRow label="Total cost" value={formatMoneyValue(currency, bill?.total_cost)} />
+            <DetailRow label="Tariff" value={formatTariffValue(currency, bill?.tariff_per_kwh)} />
+            <DetailRow label="Active energy" value={formatMoneyValue(currency, bill?.active_energy_charge)} />
+            <DetailRow label="Penalties" value={formatMoneyValue(currency, bill?.penalties)} />
+            <DetailRow label="Taxes and fees" value={formatMoneyValue(currency, bill?.taxes_and_fees)} />
+            <DetailRow label="Tariff basis" value={formatTextValue(bill?.tariff_basis)} />
+          </dl>
+        </section>
+
+        <section className="historyDetailBlock" aria-label="Calculated economics">
+          <div className="sectionHeader">
+            <h4>Economics</h4>
+            <span>{calc ? "Calculated" : "Open"}</span>
+          </div>
+          <dl className="detailRows">
+            <DetailRow label="Recommended PV" value={formatNumberValue(calc?.pv_recommendation?.recommended_kwp, " kWp")} />
+            <DetailRow label="Annual production" value={formatNumberValue(calc?.annual_solar_production_kwh, " kWh")} />
+            <DetailRow label="PPA tariff" value={formatTariffValue(currency, calc?.ppa_tariff_per_kwh)} />
+            <DetailRow
+              label="Grid Y1 savings"
+              value={formatMoneyValue(currency, calc?.scenario_grid_replacement?.annual_savings_year_1)}
+            />
+            <DetailRow
+              label="Grid + diesel Y1"
+              value={formatMoneyValue(currency, calc?.scenario_grid_diesel?.annual_savings_year_1)}
+            />
+            <DetailRow label="Constraint" value={formatTextValue(calc?.pv_recommendation?.binding_constraint)} />
+          </dl>
+        </section>
+      </div>
+
+      {billSnapshot.bills.length > 1 ? <HistoryBillTable bills={billSnapshot.bills} currency={currency} /> : null}
+
+      {noteGroups.length > 0 ? (
+        <section className="historyDetailBlock" aria-label="Extraction notes and warnings">
+          <div className="sectionHeader">
+            <h4>Audit notes</h4>
+            <span>{visibleNoteCount} shown</span>
+          </div>
+          <div className="historyNoteGroups">
+            {noteGroups.map((group) => (
+              <article className={group.tone === "warning" ? "historyNoteGroup warning" : "historyNoteGroup"} key={group.title}>
+                <div className="historyNoteGroupHeader">
+                  <strong>{group.title}</strong>
+                  <span>{group.meta}</span>
+                </div>
+                <ul className="historyNotes">
+                  {group.items.map((note, index) => (
+                    <li key={`${group.title}-${note}-${index}`}>{note}</li>
+                  ))}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {extractionDocuments.length > 0 ? (
+        <details className="historyDisclosure">
+          <summary>Document extraction snapshots</summary>
+          <div className="snapshotGrid">
+            {extractionDocuments.map((document) => (
+              <div className="snapshotBlock" key={document.id}>
+                <strong>{document.file_name}</strong>
+                <span>{fileKindLabel(document.kind)}</span>
+                <pre>{JSON.stringify(document.extraction_json, null, 2)}</pre>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </article>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function HistoryBillTable({ bills, currency }: { bills: Partial<BillData>[]; currency: string }) {
+  return (
+    <section className="historyDetailBlock" aria-label="Monthly bill values">
+      <div className="sectionHeader">
+        <h4>Monthly bills</h4>
+        <span>{bills.length} extracted</span>
+      </div>
+      <div className="tableScroller">
+        <table className="historyMiniTable">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Period</th>
+              <th>kWh</th>
+              <th>Total</th>
+              <th>Tariff</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bills.map((bill, index) => (
+              <tr key={`${bill.source_file || "bill"}-${index}`}>
+                <td>{bill.source_file || `Bill ${index + 1}`}</td>
+                <td>{[bill.billing_period_start, bill.billing_period_end].filter(Boolean).join(" to ") || "-"}</td>
+                <td>{formatNumberValue(bill.monthly_kwh)}</td>
+                <td>{formatMoneyValue(bill.currency || currency, bill.total_cost)}</td>
+                <td>{formatTariffValue(bill.currency || currency, bill.tariff_per_kwh)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
@@ -859,6 +1615,7 @@ function UploadPanel({
   accept,
   multiple,
   onFiles,
+  extraction,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -867,12 +1624,19 @@ function UploadPanel({
   accept: string;
   multiple: boolean;
   onFiles: (event: ChangeEvent<HTMLInputElement>) => void;
+  extraction: ExtractionState;
 }) {
   return (
-    <div className="uploadPanel">
+    <div className={`uploadPanel ${extraction.phase}`}>
       <div className="panelTitle">
         <span className="panelIcon">{icon}</span>
         <h3>{title}</h3>
+        <span className={`extractionStatus ${extraction.phase}`} aria-live="polite">
+          {extraction.phase === "extracting" ? <Loader2 className="spin" aria-hidden="true" /> : null}
+          {extraction.phase === "done" ? <CheckCircle2 aria-hidden="true" /> : null}
+          {extraction.phase === "error" ? <AlertCircle aria-hidden="true" /> : null}
+          {extraction.text}
+        </span>
       </div>
       <label className="fileDrop">
         <UploadCloud aria-hidden="true" />
@@ -963,6 +1727,7 @@ function BillReview({
         <h3>Bill review</h3>
         <ConfidenceBadge value={billForm.field_confidence.monthly_kwh} />
       </div>
+      <ConfidenceStrip fieldConfidence={billForm.field_confidence} />
       <div className="fieldGrid">
         <TextField label="Monthly kWh" value={billForm.monthly_kwh} onChange={(value) => update("monthly_kwh", value)} />
         <TextField label="Currency" value={billForm.currency} onChange={(value) => update("currency", value)} />
@@ -1020,6 +1785,7 @@ function ClientReview({
         <h3>Client review</h3>
         <ConfidenceBadge value={clientForm.field_confidence.client_name} />
       </div>
+      <ConfidenceStrip fieldConfidence={clientForm.field_confidence} />
       <div className="fieldGrid">
         <TextField label="Client name" value={clientForm.client_name} onChange={(value) => update("client_name", value)} />
         <label className="stackedField">
@@ -1101,6 +1867,37 @@ function ConfidenceBadge({ value }: { value: number | undefined }) {
   }
   const percent = Math.round(value * 100);
   return <span className={percent >= 75 ? "confidenceBadge good" : "confidenceBadge"}>{percent}%</span>;
+}
+
+function ConfidenceStrip({ fieldConfidence }: { fieldConfidence: Record<string, number> }) {
+  const entries = confidenceEntries(fieldConfidence);
+  if (entries.length === 0) {
+    return null;
+  }
+  const low = entries.filter((entry) => entry.percent < 75);
+  if (low.length === 0) {
+    return (
+      <div className="confidenceStrip good" aria-label="Confidence summary">
+        <CheckCircle2 aria-hidden="true" />
+        <span>Extracted fields are above 75% confidence.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="confidenceStrip warn" aria-label="Low confidence fields">
+      <AlertCircle aria-hidden="true" />
+      <div>
+        <strong>Review low-confidence values</strong>
+        <span>
+          {low
+            .slice(0, 4)
+            .map((entry) => `${entry.label} ${entry.percent}%`)
+            .join(" · ")}
+          {low.length > 4 ? ` · ${low.length - 4} more` : ""}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function EconomicsPreview({ preview, billCurrency }: { preview: CalcResult; billCurrency: string }) {

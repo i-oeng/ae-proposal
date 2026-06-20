@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+import re
 
 from pptx import Presentation
 from pptx.chart.data import ChartData
@@ -31,8 +32,8 @@ def ensure_placeholder_template(path: str | Path = "templates/aspan_template.ppt
     prs = Presentation()
     prs.core_properties.title = "Aspan Energy placeholder proposal template"
     prs.core_properties.subject = (
-        "TODO: Replace with Aspan logo; TODO: Apply Aspan brand colors; "
-        "TODO: Confirm fonts; TODO: Replace placeholder icons if needed"
+        "Editable Aspan Energy proposal template. Brand assets and final commercial "
+        "terms should be confirmed before client use."
     )
     prs.save(template_path)
     return template_path
@@ -79,6 +80,16 @@ def _add_text_box(slide, x: float, y: float, w: float, h: float, text: str, size
             run.font.color.rgb = _rgb(DARK_COLOR)
 
 
+def _add_section_heading(slide, x: float, y: float, w: float, text: str) -> None:
+    shape = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(0.28))
+    frame = shape.text_frame
+    frame.text = text
+    paragraph = frame.paragraphs[0]
+    paragraph.runs[0].font.size = Pt(10)
+    paragraph.runs[0].font.bold = True
+    paragraph.runs[0].font.color.rgb = _rgb(TITLE_COLOR)
+
+
 def _add_bullets(slide, x: float, y: float, w: float, h: float, bullets: list[str], size: int = 12) -> None:
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     frame = box.text_frame
@@ -116,6 +127,150 @@ def _new_slide(prs: Presentation, title: str, subtitle: str | None = None):
     return slide
 
 
+def _clean_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"\b(?:TODO|TBD)\b:?", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _is_placeholder_text(text: str) -> bool:
+    lowered = text.lower()
+    return not text or lowered in {
+        "details to be confirmed by aspan energy.",
+        "details to be confirmed by aspan energy",
+    }
+
+
+def _text_to_bullets(text: str | None, fallback: list[str], limit: int = 4) -> list[str]:
+    cleaned = _clean_text(text)
+    if _is_placeholder_text(cleaned):
+        return fallback[:limit]
+    parts = re.split(r"(?<=[.!?])\s+|;\s+|\n+", cleaned)
+    bullets = [part.strip(" .") for part in parts if len(part.strip()) > 12]
+    return (bullets or fallback)[:limit]
+
+
+def _current_energy_context(bill: BillData, client: ClientInfo) -> str:
+    diesel_line = (
+        "The presence of diesel generation makes avoided fuel use a separate value driver."
+        if client.has_diesel_generators
+        else "Diesel generation has not been confirmed, so the grid-only case should remain the base case."
+    )
+    return (
+        "The reviewed bills indicate a material industrial electricity load with exposure to both "
+        f"active energy tariff and non-energy charges. {diesel_line} Final commercial use should "
+        "confirm billing periods, penalties, contracted demand, and any unpaid balances excluded from "
+        "the monthly cost baseline."
+    )
+
+
+def _solution_context(client: ClientInfo, calc: CalcResult) -> str:
+    return (
+        "The proposed PV size is constrained by the most conservative sizing input rather than by a "
+        "single headline project target. For this run, the binding constraint is "
+        f"{calc.pv_recommendation.binding_constraint.replace('_', ' ')}. Final sizing should be "
+        "reconfirmed after roof layout, structural access, interconnection, and operating schedule review."
+    )
+
+
+def _client_context_bullets(client: ClientInfo, calc: CalcResult) -> list[str]:
+    bullets = [
+        f"Industry: {client.industry.replace('_', ' ').title()}",
+        f"Country: {client.country}",
+        f"Diesel generators: {'confirmed' if client.has_diesel_generators else 'not confirmed'}",
+    ]
+    if client.business_description:
+        bullets.insert(0, f"Client activity: {client.business_description}")
+    if client.city:
+        bullets.append(f"Site location: {client.city}")
+    if client.grid_connection_kva is not None:
+        bullets.append(f"Grid connection capacity: {format_number(client.grid_connection_kva)} kVA")
+    if client.available_roof_area_m2 is not None:
+        bullets.append(f"Available roof area: {format_number(client.available_roof_area_m2)} m2")
+    bullets.append(
+        f"Sizing basis: {calc.pv_recommendation.binding_constraint.replace('_', ' ')} constraint"
+    )
+    return bullets[:6]
+
+
+def _market_context_bullets(client: ClientInfo) -> list[str]:
+    bullets: list[str] = []
+    if client.country.strip().lower() == "cote d'ivoire":
+        bullets.append(
+            "Cote d'Ivoire context: ICCO is located in Abidjan, reinforcing the country's role in the cocoa economy."
+        )
+    if client.industry.strip().lower() == "food_processing":
+        bullets.append(
+            "Food and cocoa processing can include roasting, grinding, pressing, cooling, packaging, and process utility loads."
+        )
+    bullets.append(
+        "World Bank Global Solar Atlas is useful for preliminary solar-resource screening; final production remains site-specific."
+    )
+    bullets.append(
+        "Client-specific values in this deck come from uploaded bills, site reports, and offer documents rather than public web data."
+    )
+    return bullets
+
+
+def _market_source_note(client: ClientInfo) -> str:
+    sources = ["Client documents"]
+    if client.country.strip().lower() == "cote d'ivoire" or client.industry.strip().lower() == "food_processing":
+        sources.append("ICCO")
+    sources.append("World Bank Global Solar Atlas")
+    return "Source notes: " + "; ".join(sources) + "."
+
+
+def _delivery_scope_bullets(text: str | None) -> list[str]:
+    return _text_to_bullets(
+        text,
+        [
+            "Review customer energy data, bills, tariff structure, and diesel assumptions",
+            "Coordinate site assessment inputs and preliminary technical feasibility review",
+            "Refine PV sizing, savings analysis, and commercial proposal assumptions",
+            "Confirm final engineering, legal, interconnection, O&M, and performance obligations",
+        ],
+        limit=4,
+    )
+
+
+def _delivery_process_bullets(text: str | None) -> list[str]:
+    return _text_to_bullets(
+        text,
+        [
+            "Confirm utility bill, tariff, and diesel baseline assumptions",
+            "Validate roof area, usable layout, structural access, and grid connection information",
+            "Complete technical feasibility and commercial review",
+            "Prepare detailed proposal and implementation plan for approval",
+        ],
+        limit=4,
+    )
+
+
+def _next_step_bullets(text: str | None) -> list[str]:
+    return _text_to_bullets(
+        text,
+        [
+            "Confirm assumptions and commercial review owners",
+            "Validate roof area and site constraints",
+            "Confirm tariff, diesel, and PPA tariff inputs",
+            "Proceed to detailed proposal after review",
+        ],
+        limit=4,
+    )
+
+
+def _configure_savings_chart(chart, currency: str) -> None:
+    chart.has_title = True
+    chart.chart_title.text_frame.text = f"Savings comparison ({currency})"
+    chart.value_axis.has_title = True
+    chart.value_axis.axis_title.text_frame.text = f"Savings ({currency})"
+    chart.value_axis.tick_labels.number_format = f'"{currency}" #,##0'
+    chart.category_axis.has_title = True
+    chart.category_axis.axis_title.text_frame.text = "Savings period"
+    chart.has_legend = True
+
+
 def _scenario_bullets(result, currency: str) -> list[str]:
     return [
         f"Monthly savings year 1: {format_currency(result.monthly_savings_year_1, currency)}",
@@ -143,7 +298,7 @@ def build_pptx(
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_band(slide)
     _add_text_box(slide, 0.65, 0.75, 8.4, 0.7, "Aspan Energy", 28)
-    _add_text_box(slide, 0.68, 1.38, 8.8, 0.4, "Editable solar PPA proposal", 14)
+    _add_text_box(slide, 0.68, 1.38, 8.8, 0.4, "Commercial solar PPA analysis", 14)
     _add_text_box(
         slide,
         0.68,
@@ -153,17 +308,17 @@ def build_pptx(
         f"{client.client_name}\n{client.country} | {client.industry.replace('_', ' ').title()}\nProposal date: {date.today().isoformat()}",
         20,
     )
-    _add_bullets(
+    _add_metric(slide, 0.72, 5.15, "PV size", format_kwp(calc.pv_recommendation.recommended_kwp), 2.0)
+    _add_metric(slide, 2.95, 5.15, "PPA tariff", format_currency(calc.ppa_tariff_per_kwh, bill.currency, 3), 2.0)
+    _add_metric(slide, 5.18, 5.15, "Analysis", f"{config.analysis_horizon_years} years", 2.0)
+    _add_metric(slide, 7.41, 5.15, "Currency", bill.currency, 1.6)
+    _add_text_box(
         slide,
         0.72,
-        5.3,
-        8.5,
-        0.8,
-        [
-            "TODO: Replace with Aspan logo",
-            "TODO: Apply Aspan brand colors",
-            "TODO: Confirm fonts and icons",
-        ],
+        6.15,
+        8.6,
+        0.45,
+        "Preliminary proposal generated from reviewed documents; final engineering and commercial terms require Aspan confirmation.",
         9,
     )
 
@@ -185,6 +340,7 @@ def build_pptx(
             f"Grid + Diesel cumulative savings: {format_currency(calc.scenario_grid_diesel.cumulative_savings, bill.currency)}",
         ],
     )
+    _add_bullets(slide, 0.72, 5.55, 8.8, 0.85, _client_context_bullets(client, calc)[:3], 9)
 
     # Slide 3
     slide = _new_slide(prs, "Current Energy Situation")
@@ -207,7 +363,10 @@ def build_pptx(
             ),
         ],
     )
-    _add_text_box(slide, 5.05, 1.35, 4.2, 2.8, narrative.current_energy_situation, 13)
+    current_text = _clean_text(narrative.current_energy_situation)
+    if _is_placeholder_text(current_text):
+        current_text = _current_energy_context(bill, client)
+    _add_text_box(slide, 5.05, 1.35, 4.2, 2.8, current_text, 12)
 
     # Slide 4
     slide = _new_slide(prs, "Proposed Solar Solution")
@@ -224,7 +383,10 @@ def build_pptx(
             f"Daytime consumption offset cap: {format_number(calc.annual_daytime_consumption_kwh)} kWh",
         ],
     )
-    _add_text_box(slide, 5.1, 1.35, 4.1, 2.8, narrative.proposed_solar_solution, 13)
+    solution_text = _clean_text(narrative.proposed_solar_solution)
+    if _is_placeholder_text(solution_text) or len(solution_text) < 120:
+        solution_text = _solution_context(client, calc)
+    _add_text_box(slide, 5.1, 1.35, 4.1, 2.8, solution_text, 12)
 
     # Slide 5
     slide = _new_slide(prs, "PPA Model Explanation")
@@ -246,7 +408,14 @@ def build_pptx(
     # Slide 6
     slide = _new_slide(prs, "Economic Analysis: Grid Replacement")
     _add_bullets(slide, 0.72, 1.35, 4.5, 2.1, _scenario_bullets(calc.scenario_grid_replacement, bill.currency))
-    _add_text_box(slide, 5.45, 1.35, 3.8, 2.4, narrative.economic_analysis_summary, 13)
+    econ_text = _clean_text(narrative.economic_analysis_summary)
+    if _is_placeholder_text(econ_text):
+        econ_text = (
+            "This scenario isolates savings where solar replaces grid electricity priced at the reviewed "
+            "tariff baseline. The cumulative case applies the configured tariff escalation and PV degradation "
+            "assumptions across the analysis horizon."
+        )
+    _add_text_box(slide, 5.45, 1.35, 3.8, 2.4, econ_text, 12)
 
     # Slide 7
     slide = _new_slide(prs, "Economic Analysis: Grid + Diesel")
@@ -262,7 +431,11 @@ def build_pptx(
     )
 
     # Slide 8
-    slide = _new_slide(prs, "Scenario Comparison")
+    slide = _new_slide(
+        prs,
+        "Scenario Comparison",
+        f"Values shown in {bill.currency}; comparison uses year 1 annual savings and {config.analysis_horizon_years}-year cumulative savings.",
+    )
     chart_data = ChartData()
     chart_data.categories = ["Annual savings", f"{config.analysis_horizon_years}-year savings"]
     chart_data.add_series(
@@ -279,7 +452,7 @@ def build_pptx(
             calc.scenario_grid_diesel.cumulative_savings,
         ),
     )
-    slide.shapes.add_chart(
+    chart_shape = slide.shapes.add_chart(
         XL_CHART_TYPE.COLUMN_CLUSTERED,
         Inches(0.8),
         Inches(1.35),
@@ -287,35 +460,45 @@ def build_pptx(
         Inches(3.9),
         chart_data,
     )
-
-    # Slide 9
-    slide = _new_slide(prs, "Scope of Aspan Services")
-    _add_text_box(slide, 0.72, 1.35, 8.6, 3.4, narrative.scope_of_services, 14)
-
-    # Slide 10
-    slide = _new_slide(prs, "Implementation Process")
-    _add_text_box(slide, 0.72, 1.35, 8.6, 3.4, narrative.implementation_process, 14)
-
-    # Slide 11
-    slide = _new_slide(prs, "Next Steps")
+    _configure_savings_chart(chart_shape.chart, bill.currency)
     _add_bullets(
         slide,
-        0.72,
-        1.35,
-        8.4,
-        3.2,
+        0.82,
+        5.48,
+        8.35,
+        0.85,
         [
-            "Confirm assumptions",
-            "Validate roof area",
-            "Confirm tariff and diesel assumptions",
-            "Complete site assessment",
-            "Complete commercial review",
-            "Proceed to detailed proposal",
+            f"Unit: {bill.currency}; values are not kWh and should be read as monetary savings.",
+            "Grid + Diesel uses a blended current-cost baseline for displaced daytime energy.",
         ],
-        14,
+        9,
     )
 
-    # Slide 12
+    # Slide 9
+    slide = _new_slide(prs, "Market Context & Proposal Basis")
+    _add_bullets(slide, 0.72, 1.35, 8.55, 2.25, _market_context_bullets(client), 12)
+    _add_text_box(slide, 0.72, 4.05, 8.6, 0.55, _market_source_note(client), 9)
+    _add_bullets(slide, 0.72, 4.72, 8.55, 1.1, _client_context_bullets(client, calc), 9)
+
+    # Slide 10
+    slide = _new_slide(prs, "Delivery Plan & Next Steps")
+    _add_section_heading(slide, 0.7, 1.28, 2.6, "Aspan scope")
+    _add_bullets(slide, 0.7, 1.68, 2.65, 3.6, _delivery_scope_bullets(narrative.scope_of_services), 10)
+    _add_section_heading(slide, 3.65, 1.28, 2.65, "Review process")
+    _add_bullets(slide, 3.65, 1.68, 2.65, 3.6, _delivery_process_bullets(narrative.implementation_process), 10)
+    _add_section_heading(slide, 6.55, 1.28, 2.65, "Immediate next steps")
+    _add_bullets(slide, 6.55, 1.68, 2.75, 3.6, _next_step_bullets(narrative.next_steps), 10)
+    _add_text_box(
+        slide,
+        0.72,
+        5.55,
+        8.55,
+        0.65,
+        "Final dates, responsibilities, contract terms, and performance obligations remain subject to Aspan and client confirmation.",
+        9,
+    )
+
+    # Slide 11
     slide = _new_slide(prs, "Assumptions Appendix")
     assumption_lines = [
         f"Monthly kWh: {format_number(calc.assumptions.monthly_kwh)}",

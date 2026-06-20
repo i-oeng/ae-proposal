@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ from core.pipeline import generate_proposal_artifacts
 from core.supabase_store import (
     get_supabase_store,
     safe_create_run,
+    safe_download_stored_file,
     safe_insert_client,
     safe_list_proposal_runs,
     safe_store_documents,
@@ -45,7 +47,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Proposal-Run-Id"],
+    expose_headers=["X-Proposal-Run-Id", "Content-Disposition"],
 )
 
 
@@ -67,6 +69,39 @@ def proposal_runs_endpoint(limit: int = 25) -> dict[str, list[dict]]:
         return {"runs": []}
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _download_history_file(table: str, run_id: str, file_id: str) -> Response:
+    store = get_supabase_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Supabase persistence is not configured.")
+
+    stored_file = safe_download_stored_file(store, table, run_id, file_id)
+    if stored_file is None:
+        raise HTTPException(status_code=404, detail="Stored file was not found.")
+
+    content, file_name, content_type = stored_file
+    fallback_name = "".join(character if character.isalnum() or character in "._-" else "_" for character in file_name)
+    fallback_name = fallback_name or "download"
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{fallback_name}"; filename*=UTF-8\'\'{quote(file_name)}'
+            )
+        },
+    )
+
+
+@app.get("/proposal-runs/{run_id}/documents/{document_id}/download")
+def proposal_run_document_download_endpoint(run_id: str, document_id: str) -> Response:
+    return _download_history_file("documents", run_id, document_id)
+
+
+@app.get("/proposal-runs/{run_id}/proposal-outputs/{output_id}/download")
+def proposal_run_output_download_endpoint(run_id: str, output_id: str) -> Response:
+    return _download_history_file("proposal_outputs", run_id, output_id)
 
 
 def _save_uploads(files: list[UploadFile], temp_dir: str) -> list[str]:
@@ -119,6 +154,13 @@ def _set_run_header(response: Response, run_id: str | None) -> None:
         response.headers["X-Proposal-Run-Id"] = run_id
 
 
+@app.post("/proposal-runs")
+def create_proposal_run_endpoint(response: Response) -> dict[str, str | None]:
+    run_id = safe_create_run(get_supabase_store())
+    _set_run_header(response, run_id)
+    return {"run_id": run_id}
+
+
 def _bill_extractions_by_file(result: BillExtractionResult) -> dict[str, BillData]:
     return {
         bill.source_file: bill
@@ -128,7 +170,7 @@ def _bill_extractions_by_file(result: BillExtractionResult) -> dict[str, BillDat
 
 
 @app.post("/extract-bill", response_model=BillData)
-async def extract_bill_endpoint(
+def extract_bill_endpoint(
     response: Response,
     files: list[UploadFile] = File(...),
     x_proposal_run_id: str | None = Header(default=None, alias="X-Proposal-Run-Id"),
@@ -148,7 +190,7 @@ async def extract_bill_endpoint(
 
 
 @app.post("/extract-bill-collection", response_model=BillExtractionResult)
-async def extract_bill_collection_endpoint(
+def extract_bill_collection_endpoint(
     response: Response,
     files: list[UploadFile] = File(...),
     x_proposal_run_id: str | None = Header(default=None, alias="X-Proposal-Run-Id"),
@@ -167,7 +209,7 @@ async def extract_bill_collection_endpoint(
 
 
 @app.post("/extract-client-info", response_model=ClientInfoDraft)
-async def extract_client_info_endpoint(
+def extract_client_info_endpoint(
     response: Response,
     files: list[UploadFile] = File(...),
     x_proposal_run_id: str | None = Header(default=None, alias="X-Proposal-Run-Id"),
@@ -187,7 +229,7 @@ async def extract_client_info_endpoint(
 
 
 @app.post("/extract-documents", response_model=DocumentExtractionResult)
-async def extract_documents_endpoint(
+def extract_documents_endpoint(
     response: Response,
     bill_files: list[UploadFile] | None = File(default=None),
     client_files: list[UploadFile] | None = File(default=None),
@@ -204,17 +246,19 @@ async def extract_documents_endpoint(
         if not bill_paths and not client_paths:
             raise HTTPException(status_code=400, detail="Upload utility bills or client information files.")
 
-        bill_result: BillExtractionResult | None = None
-        client_draft: ClientInfoDraft | None = None
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            bill_future = executor.submit(extract_bill_collection, bill_paths, config) if bill_paths else None
+            client_future = executor.submit(extract_client_info, client_paths, config) if client_paths else None
+            bill_result = bill_future.result() if bill_future else None
+            client_draft = client_future.result() if client_future else None
+
         warnings: list[str] = []
 
-        if bill_paths:
-            bill_result = extract_bill_collection(bill_paths, config)
+        if bill_result is not None:
             safe_store_documents(store, run_id, bill_paths, "utility_bill", _bill_extractions_by_file(bill_result))
             warnings.extend(bill_result.warnings)
 
-        if client_paths:
-            client_draft = extract_client_info(client_paths, config)
+        if client_draft is not None:
             extraction_by_file = {Path(path).name: client_draft for path in client_paths}
             safe_store_documents(store, run_id, client_paths, "client_information", extraction_by_file)
 

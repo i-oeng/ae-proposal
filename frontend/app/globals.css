@@ -26,6 +26,29 @@
 html {
   min-height: 100%;
   background: var(--wash);
+  scrollbar-color: var(--accent-strong) rgba(15, 23, 42, 0.14);
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+}
+
+html::-webkit-scrollbar {
+  width: 12px;
+}
+
+html::-webkit-scrollbar-track {
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.86), rgba(226, 232, 240, 0.86)),
+    var(--wash);
+}
+
+html::-webkit-scrollbar-thumb {
+  border: 3px solid rgba(248, 250, 252, 0.94);
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent-strong), #245bd6);
+}
+
+html::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #166534, #1d4ed8);
 }
 
 body {
@@ -237,6 +260,38 @@ svg {
   animation: spin 900ms linear infinite;
 }
 
+.scrollTopButton {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 999px;
+  background: var(--rail);
+  color: #ffffff;
+  box-shadow: 0 16px 35px rgba(15, 23, 42, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(14px) scale(0.96);
+  transition:
+    opacity var(--fast),
+    transform var(--fast),
+    background var(--fast);
+}
+
+.scrollTopButton.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.scrollTopButton:hover {
+  background: var(--accent-strong);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -347,6 +402,54 @@ svg {
   border-radius: var(--radius);
   background: #dcfce7;
   color: var(--accent-strong);
+}
+
+.extractionStatus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 62%;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 850;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.extractionStatus svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+}
+
+.extractionStatus.extracting {
+  color: #1d4ed8;
+}
+
+.extractionStatus.done {
+  color: var(--accent-strong);
+}
+
+.extractionStatus.error {
+  color: var(--danger);
+}
+
+.uploadPanel.extracting .fileDrop {
+  border-color: rgba(37, 99, 235, 0.58);
+  background:
+    linear-gradient(180deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.9)),
+    repeating-linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0 1px, transparent 1px 12px);
+}
+
+.uploadPanel.done .fileDrop {
+  border-color: rgba(22, 163, 74, 0.45);
+}
+
+.uploadPanel.error .fileDrop {
+  border-color: rgba(180, 35, 24, 0.48);
 }
 
 .fileDrop {
@@ -480,6 +583,42 @@ textarea {
 .confidenceBadge.muted {
   background: #f0f3f4;
   color: var(--muted);
+}
+
+.confidenceStrip {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: var(--radius-sm);
+  padding: 10px 11px;
+  font-weight: 750;
+}
+
+.confidenceStrip.good {
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.confidenceStrip.warn {
+  border: 1px solid rgba(180, 83, 9, 0.24);
+  background: #fff7e9;
+  color: #7a4300;
+}
+
+.confidenceStrip div {
+  display: grid;
+  gap: 2px;
+}
+
+.confidenceStrip strong {
+  font-size: 0.84rem;
+}
+
+.confidenceStrip span {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  text-transform: none;
 }
 
 .periodHeader {
@@ -692,6 +831,343 @@ textarea {
   color: var(--blue);
 }
 
+.historyLayout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.35fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.historyList {
+  display: grid;
+  gap: 8px;
+  max-height: 720px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.historyRunButton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  min-height: 106px;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  padding: 12px;
+  text-align: left;
+}
+
+.historyRunButton.active {
+  border-color: rgba(34, 197, 94, 0.5);
+  background:
+    linear-gradient(180deg, rgba(240, 253, 244, 0.95), rgba(255, 255, 255, 0.94));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.historyRunMain,
+.historyRunMeta,
+.fileAccessLink span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.historyRunMain {
+  grid-column: 1 / 2;
+}
+
+.historyRunMain strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.historyRunMain small,
+.historyRunMeta small,
+.fileAccessLink em,
+.miniEmpty {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.historyRunMeta {
+  grid-column: 1 / -1;
+}
+
+.historyRunMeta code,
+.historyTable code {
+  width: fit-content;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+  color: var(--ink-soft);
+  padding: 3px 6px;
+}
+
+.historyDetail {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.historyDetailHero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--soft-line);
+  padding-bottom: 14px;
+}
+
+.historyDetailHero span:first-child {
+  color: var(--blue);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.historyDetailHero h3 {
+  margin: 4px 0;
+  color: var(--ink);
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.historyDetailHero p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.historyDetailActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compactButton {
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: 0.84rem;
+}
+
+.historyDetailBlock {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 14px;
+}
+
+.historyDetailBlock h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.fileAccessGrid,
+.historyValuesGrid,
+.snapshotGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.fileAccessGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fileAccessGrid > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fileAccessGrid > div > strong {
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.fileAccessLink {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: var(--ink);
+  padding: 9px 10px;
+  text-decoration: none;
+}
+
+.fileAccessLink:hover,
+.fileAccessLink:focus-visible {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: #eff6ff;
+}
+
+.historyValuesGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.detailRows {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.detailRows div {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.68fr) minmax(0, 1fr);
+  gap: 12px;
+  border-top: 1px solid var(--soft-line);
+  padding: 9px 0;
+}
+
+.detailRows div:first-child {
+  border-top: 0;
+}
+
+.detailRows dt,
+.detailRows dd {
+  margin: 0;
+}
+
+.detailRows dt {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.detailRows dd {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.historyDescription {
+  margin: 0;
+  border-top: 1px solid var(--soft-line);
+  color: var(--ink-soft);
+  line-height: 1.55;
+  padding-top: 10px;
+}
+
+.historyNotes {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.historyNoteGroups {
+  display: grid;
+  gap: 10px;
+}
+
+.historyNoteGroup {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.86);
+  padding: 12px;
+}
+
+.historyNoteGroup.warning {
+  border-color: rgba(180, 83, 9, 0.26);
+  background: #fffaf0;
+}
+
+.historyNoteGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.historyNoteGroupHeader strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.historyNoteGroupHeader span {
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 4px 8px;
+  font-size: 0.74rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.historyNoteGroup.warning .historyNoteGroupHeader span {
+  background: #fff7e9;
+  color: var(--warn);
+}
+
+.historyDisclosure {
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px 14px;
+}
+
+.historyDisclosure summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.snapshotGrid {
+  margin-top: 12px;
+}
+
+.snapshotBlock {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border-top: 1px solid var(--soft-line);
+  padding-top: 10px;
+}
+
+.snapshotBlock span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.snapshotBlock pre {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-sm);
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 12px;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.historyMiniTable {
+  min-width: 620px;
+}
+
 .historyTable code {
   border: 1px solid var(--soft-line);
   border-radius: var(--radius-sm);
@@ -739,6 +1215,11 @@ textarea {
     padding: 16px;
   }
 
+  .scrollTopButton {
+    right: 16px;
+    bottom: 16px;
+  }
+
   .topBar,
   .topActions,
   .commandStrip {
@@ -754,6 +1235,19 @@ textarea {
   .reviewGrid,
   .fieldGrid {
     grid-template-columns: 1fr;
+  }
+
+  .panelTitle {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .extractionStatus {
+    width: calc(100% - 44px);
+    max-width: none;
+    justify-content: flex-start;
+    margin-left: 44px;
+    text-align: left;
   }
 
   .periodRow {
@@ -780,6 +1274,25 @@ textarea {
 
   .scenarioRows dd {
     text-align: left;
+  }
+
+  .historyLayout,
+  .fileAccessGrid,
+  .historyValuesGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .historyList {
+    max-height: none;
+  }
+
+  .historyDetailHero {
+    flex-direction: column;
+  }
+
+  .detailRows div {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .metric {

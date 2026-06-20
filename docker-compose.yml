@@ -1,0 +1,65 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8001}
+    image: aspan-proposal-engine:latest
+    env_file:
+      - .env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      FRONTEND_HOST: 0.0.0.0
+      FRONTEND_PORT: 3000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8001}
+    ports:
+      - "3000:3000"
+      - "${ASPAN_API_PORT:-8001}:8000"
+    volumes:
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+      - ./outputs:/app/outputs
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 10s
+      timeout: 6s
+      retries: 8
+      start_period: 30s
+    restart: unless-stopped
+
+  n8n:
+    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:2.26.8}
+    environment:
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://127.0.0.1:5678}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://127.0.0.1:5678/}
+      N8N_SECURE_COOKIE: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      TZ: ${GENERIC_TIMEZONE:-UTC}
+      ASPAN_API_URL: http://app:8000
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./automation:/opt/aspan:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - /opt/aspan/start_n8n.sh
+    restart: unless-stopped
+
+volumes:
+  n8n_data:

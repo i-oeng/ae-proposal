@@ -1,36 +1,60 @@
 {
-  "name": "Aspan Proposal Engine",
+  "id": "9e2288ba-d66f-4cfe-9d31-f97bfebf7697",
+  "name": "Aspan Proposal Engine - Document Workflow",
   "nodes": [
     {
       "parameters": {
         "path": "aspan-proposal",
         "httpMethod": "POST",
-        "responseMode": "lastNode",
+        "responseMode": "responseNode",
         "options": {
           "binaryData": true
         }
       },
-      "id": "WebhookTrigger",
-      "name": "Webhook Trigger",
+      "id": "0bc1f2af-6ff7-4b73-b155-bd9bef7bc0dd",
+      "name": "Proposal Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
         0,
         0
-      ]
+      ],
+      "webhookId": "aspan-proposal"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/extract-bill",
-        "sendBinaryData": true,
-        "binaryPropertyName": "bill",
-        "options": {}
+        "url": "={{ ($env.ASPAN_API_URL || 'http://host.docker.internal:8000') + '/extract-documents' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "bill_files",
+              "inputDataFieldName": "bill_files"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "client_files",
+              "inputDataFieldName": "client_files"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          }
+        }
       },
-      "id": "ExtractBill",
-      "name": "FastAPI Extract Bill",
+      "id": "6ff83416-a36d-4578-bcf1-b1105551c603",
+      "name": "Extract Bill and Client Documents",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "typeVersion": 4.2,
       "position": [
         280,
         0
@@ -38,23 +62,12 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://host.docker.internal:8000/generate-proposal",
-        "sendBody": true,
-        "contentType": "json",
-        "jsonBody": "={\"bill\": $json, \"client\": $node[\"Webhook Trigger\"].json[\"client\"]}",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file"
-            }
-          }
-        }
+        "jsCode": "const response = $json;\nconst extraction = response.body ?? response;\nconst bill = extraction.bill?.combined_bill;\nconst client = extraction.client;\n\nif (!bill) {\n  throw new Error('No utility bill values were extracted.');\n}\nif (!client) {\n  throw new Error('No client values were extracted.');\n}\n\nconst missing = ['client_name', 'industry', 'country'].filter((field) => !client[field]);\nif (missing.length) {\n  throw new Error(`Client extraction is missing required fields: ${missing.join(', ')}`);\n}\n\nconst headers = response.headers ?? {};\nconst runId = headers['x-proposal-run-id'] ?? headers['X-Proposal-Run-Id'] ?? '';\n\nreturn [{\n  json: {\n    proposal_request: {\n      bill,\n      client: {\n        ...client,\n        has_diesel_generators: client.has_diesel_generators ?? false\n      }\n    },\n    proposal_run_id: runId,\n    extraction_warnings: extraction.warnings ?? []\n  }\n}];"
       },
-      "id": "GenerateProposal",
-      "name": "FastAPI Generate Proposal",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "id": "b72ec60d-4ec6-48fe-9b57-0fd16a2c0308",
+      "name": "Validate and Prepare Proposal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         560,
         0
@@ -62,43 +75,99 @@
     },
     {
       "parameters": {
-        "respondWith": "binary",
-        "responseDataSource": "firstEntryBinary"
+        "method": "POST",
+        "url": "={{ ($env.ASPAN_API_URL || 'http://host.docker.internal:8000') + '/generate-proposal' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Proposal-Run-Id",
+              "value": "={{ $json.proposal_run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.proposal_request }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
       },
-      "id": "ReturnPptx",
-      "name": "Return PPTX",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
+      "id": "26b94547-f78d-435e-887d-5ba6fda77fb2",
+      "name": "Generate Proposal PPTX",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "firstEntryBinary",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+              }
+            ]
+          }
+        }
+      },
+      "id": "5c4a6341-a951-4474-a70c-fe3f54d7fa81",
+      "name": "Return PPTX",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1120,
         0
       ]
     }
   ],
   "connections": {
-    "Webhook Trigger": {
+    "Proposal Webhook": {
       "main": [
         [
           {
-            "node": "FastAPI Extract Bill",
+            "node": "Extract Bill and Client Documents",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "FastAPI Extract Bill": {
+    "Extract Bill and Client Documents": {
       "main": [
         [
           {
-            "node": "FastAPI Generate Proposal",
+            "node": "Validate and Prepare Proposal",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "FastAPI Generate Proposal": {
+    "Validate and Prepare Proposal": {
+      "main": [
+        [
+          {
+            "node": "Generate Proposal PPTX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Proposal PPTX": {
       "main": [
         [
           {
@@ -114,10 +183,10 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "v1-streamlit",
+  "versionId": "ae06e34d-9713-47de-a05f-ce8c0f73e914",
   "meta": {
-    "templateCredsSetupCompleted": true
+    "templateCredsSetupCompleted": true,
+    "description": "Receives utility and client documents, extracts both through FastAPI, reuses one proposal run, generates the PPTX, and returns the file."
   },
   "tags": []
 }
-
