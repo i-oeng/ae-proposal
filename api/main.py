@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,12 +29,16 @@ from core.supabase_store import (
     get_supabase_store,
     safe_create_run,
     safe_download_stored_file,
+    safe_ensure_run,
     safe_insert_client,
     safe_list_proposal_runs,
     safe_store_documents,
     safe_store_proposal_output,
     safe_update_run,
 )
+
+logger = logging.getLogger(__name__)
+PERSISTENCE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="aspan-persistence")
 
 app = FastAPI(title="Proposal Engine", version="0.1.0")
 
@@ -169,6 +175,79 @@ def _bill_extractions_by_file(result: BillExtractionResult) -> dict[str, BillDat
     }
 
 
+def _local_run_id(existing_run_id: str | None) -> str:
+    return existing_run_id or str(uuid4())
+
+
+def _stage_uploads(file_paths: list[str]) -> tuple[list[str], Path]:
+    staging_dir = Path("cache/pending_uploads") / uuid4().hex
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged_paths: list[str] = []
+    for file_path in file_paths:
+        target = staging_dir / Path(file_path).name
+        shutil.copy2(file_path, target)
+        staged_paths.append(str(target))
+    return staged_paths, staging_dir
+
+
+def _persist_extraction(
+    store,
+    run_id: str,
+    file_paths: list[str],
+    staging_dir: Path,
+    kind: str,
+    extractions_by_file: dict,
+    *,
+    bill=None,
+    client=None,
+    warnings=None,
+) -> None:
+    try:
+        safe_ensure_run(store, run_id)
+        safe_store_documents(store, run_id, file_paths, kind, extractions_by_file)
+        safe_update_run(store, run_id, bill=bill, client=client, warnings=warnings)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _persist_proposal(store, run_id: str, request: ProposalRequest, proposal_response, path: Path) -> None:
+    safe_ensure_run(store, run_id)
+    client_id = safe_insert_client(store, request.client)
+    safe_update_run(
+        store,
+        run_id,
+        client_id=client_id,
+        status="generated",
+        bill=request.bill,
+        client=request.client,
+        response=proposal_response,
+    )
+    safe_store_proposal_output(store, run_id, path)
+
+
+def _persist_calculation(store, run_id: str, request: ProposalRequest, calc: CalcResult) -> None:
+    safe_ensure_run(store, run_id)
+    safe_update_run(
+        store,
+        run_id,
+        bill=request.bill,
+        client=request.client,
+        calc=calc,
+        warnings=calc.warnings,
+    )
+
+
+def _submit_persistence(function, *args, **kwargs) -> None:
+    future = PERSISTENCE_EXECUTOR.submit(function, *args, **kwargs)
+
+    def report_failure(completed_future) -> None:
+        error = completed_future.exception()
+        if error is not None:
+            logger.error("Background persistence failed: %s", error)
+
+    future.add_done_callback(report_failure)
+
+
 @app.post("/extract-bill", response_model=BillData)
 def extract_bill_endpoint(
     response: Response,
@@ -177,15 +256,29 @@ def extract_bill_endpoint(
 ):
     config = load_config()
     store = get_supabase_store()
-    run_id = safe_create_run(store, x_proposal_run_id)
+    run_id = _local_run_id(x_proposal_run_id)
     _set_run_header(response, run_id)
-
     with tempfile.TemporaryDirectory() as temp_dir:
         saved_paths = _save_uploads(files, temp_dir)
-        result = extract_bill_collection(saved_paths, config)
+        try:
+            result = extract_bill_collection(saved_paths, config)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Bill extraction failed")
+            raise HTTPException(status_code=500, detail=f"Bill extraction failed: {exc}") from exc
         bill = result.combined_bill
-        safe_store_documents(store, run_id, saved_paths, "utility_bill", _bill_extractions_by_file(result))
-        safe_update_run(store, run_id, bill=result, warnings=result.warnings)
+        if store is not None:
+            staged_paths, staging_dir = _stage_uploads(saved_paths)
+            _submit_persistence(
+                _persist_extraction,
+                store,
+                run_id,
+                staged_paths,
+                staging_dir,
+                "utility_bill",
+                _bill_extractions_by_file(result),
+                bill=result,
+                warnings=result.warnings,
+            )
     return bill
 
 
@@ -197,14 +290,28 @@ def extract_bill_collection_endpoint(
 ):
     config = load_config()
     store = get_supabase_store()
-    run_id = safe_create_run(store, x_proposal_run_id)
+    run_id = _local_run_id(x_proposal_run_id)
     _set_run_header(response, run_id)
-
     with tempfile.TemporaryDirectory() as temp_dir:
         saved_paths = _save_uploads(files, temp_dir)
-        result = extract_bill_collection(saved_paths, config)
-        safe_store_documents(store, run_id, saved_paths, "utility_bill", _bill_extractions_by_file(result))
-        safe_update_run(store, run_id, bill=result, warnings=result.warnings)
+        try:
+            result = extract_bill_collection(saved_paths, config)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Bill collection extraction failed")
+            raise HTTPException(status_code=500, detail=f"Bill extraction failed: {exc}") from exc
+        if store is not None:
+            staged_paths, staging_dir = _stage_uploads(saved_paths)
+            _submit_persistence(
+                _persist_extraction,
+                store,
+                run_id,
+                staged_paths,
+                staging_dir,
+                "utility_bill",
+                _bill_extractions_by_file(result),
+                bill=result,
+                warnings=result.warnings,
+            )
     return result
 
 
@@ -216,15 +323,28 @@ def extract_client_info_endpoint(
 ):
     config = load_config()
     store = get_supabase_store()
-    run_id = safe_create_run(store, x_proposal_run_id)
+    run_id = _local_run_id(x_proposal_run_id)
     _set_run_header(response, run_id)
-
     with tempfile.TemporaryDirectory() as temp_dir:
         saved_paths = _save_uploads(files, temp_dir)
-        draft = extract_client_info(saved_paths, config)
-        extraction_by_file = {Path(path).name: draft for path in saved_paths}
-        safe_store_documents(store, run_id, saved_paths, "client_information", extraction_by_file)
-        safe_update_run(store, run_id, client=draft)
+        try:
+            draft = extract_client_info(saved_paths, config)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Client extraction failed")
+            raise HTTPException(status_code=500, detail=f"Client extraction failed: {exc}") from exc
+        if store is not None:
+            staged_paths, staging_dir = _stage_uploads(saved_paths)
+            extraction_by_file = {Path(path).name: draft for path in staged_paths}
+            _submit_persistence(
+                _persist_extraction,
+                store,
+                run_id,
+                staged_paths,
+                staging_dir,
+                "client_information",
+                extraction_by_file,
+                client=draft,
+            )
     return draft
 
 
@@ -237,7 +357,7 @@ def extract_documents_endpoint(
 ):
     config = load_config()
     store = get_supabase_store()
-    run_id = safe_create_run(store, x_proposal_run_id)
+    run_id = _local_run_id(x_proposal_run_id)
     _set_run_header(response, run_id)
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -246,29 +366,47 @@ def extract_documents_endpoint(
         if not bill_paths and not client_paths:
             raise HTTPException(status_code=400, detail="Upload utility bills or client information files.")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             bill_future = executor.submit(extract_bill_collection, bill_paths, config) if bill_paths else None
             client_future = executor.submit(extract_client_info, client_paths, config) if client_paths else None
-            bill_result = bill_future.result() if bill_future else None
-            client_draft = client_future.result() if client_future else None
+            try:
+                bill_result = bill_future.result() if bill_future else None
+                client_draft = client_future.result() if client_future else None
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Combined document extraction failed")
+                raise HTTPException(status_code=500, detail=f"Document extraction failed: {exc}") from exc
 
         warnings: list[str] = []
 
         if bill_result is not None:
-            safe_store_documents(store, run_id, bill_paths, "utility_bill", _bill_extractions_by_file(bill_result))
             warnings.extend(bill_result.warnings)
+            if store is not None:
+                staged_paths, staging_dir = _stage_uploads(bill_paths)
+                _submit_persistence(
+                    _persist_extraction,
+                    store,
+                    run_id,
+                    staged_paths,
+                    staging_dir,
+                    "utility_bill",
+                    _bill_extractions_by_file(bill_result),
+                    bill=bill_result,
+                    warnings=bill_result.warnings,
+                )
 
-        if client_draft is not None:
-            extraction_by_file = {Path(path).name: client_draft for path in client_paths}
-            safe_store_documents(store, run_id, client_paths, "client_information", extraction_by_file)
-
-        safe_update_run(
-            store,
-            run_id,
-            bill=bill_result,
-            client=client_draft,
-            warnings=warnings if warnings else None,
-        )
+        if client_draft is not None and store is not None:
+            staged_paths, staging_dir = _stage_uploads(client_paths)
+            extraction_by_file = {Path(path).name: client_draft for path in staged_paths}
+            _submit_persistence(
+                _persist_extraction,
+                store,
+                run_id,
+                staged_paths,
+                staging_dir,
+                "client_information",
+                extraction_by_file,
+                client=client_draft,
+            )
         return DocumentExtractionResult(bill=bill_result, client=client_draft, warnings=warnings)
 
 
@@ -287,14 +425,8 @@ def calculate_preview_endpoint(
         calc = calculate_proposal(request.bill, request.client, config)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Calculation failed: {exc}") from exc
-    safe_update_run(
-        store,
-        run_id,
-        bill=request.bill,
-        client=request.client,
-        calc=calc,
-        warnings=calc.warnings,
-    )
+    if store is not None and run_id is not None:
+        _submit_persistence(_persist_calculation, store, run_id, request, calc)
     return calc
 
 
@@ -315,17 +447,8 @@ def generate_proposal_endpoint(
     path = Path(proposal_response.output_pptx_path)
     if not path.exists():
         raise HTTPException(status_code=500, detail="Proposal file was not created.")
-    client_id = safe_insert_client(store, request.client)
-    safe_update_run(
-        store,
-        run_id,
-        client_id=client_id,
-        status="generated",
-        bill=request.bill,
-        client=request.client,
-        response=proposal_response,
-    )
-    safe_store_proposal_output(store, run_id, path)
+    if store is not None and run_id is not None:
+        _submit_persistence(_persist_proposal, store, run_id, request, proposal_response, path)
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import mimetypes
@@ -13,11 +14,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from core.config_loader import AppConfig
+from core.extraction_cache import cache_key_for_files, load_cached_model, store_cached_model
 from core.models import BillData, BillExtractionResult, BillTariffPeriod
 from core.utils import load_local_env
 
 logger = logging.getLogger(__name__)
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+BILL_EXTRACTION_CACHE_VERSION = "bill-extraction-v1"
 
 
 def fallback_bill(reason: str) -> BillData:
@@ -146,12 +149,20 @@ def extract_bill(file_path: str, config: AppConfig) -> BillData:  # noqa: ARG001
     if not os.getenv("ANTHROPIC_API_KEY"):
         return fallback_bill("ANTHROPIC_API_KEY not set; extraction fallback used.")
 
+    model = os.getenv("ANTHROPIC_VISION_MODEL", DEFAULT_ANTHROPIC_MODEL)
+    cache_key = cache_key_for_files(BILL_EXTRACTION_CACHE_VERSION, [file_path], model)
+    cached = load_cached_model(cache_key, BillData)
+    if cached is not None:
+        return cached.model_copy(update={"source_file": Path(file_path).name})
+
     last_error: Exception | None = None
     for _attempt in range(2):
         try:
             payload = _call_claude_for_bill(file_path)
             bill = BillData.model_validate(payload)
-            return bill.model_copy(update={"source_file": Path(file_path).name})
+            bill = bill.model_copy(update={"source_file": Path(file_path).name})
+            store_cached_model(cache_key, bill)
+            return bill
         except (json.JSONDecodeError, ValidationError, OSError, Exception) as exc:  # noqa: BLE001
             logger.warning("Bill extraction attempt failed: %s", exc)
             last_error = exc
@@ -288,7 +299,16 @@ def extract_bill_collection(file_paths: list[str], config: AppConfig) -> BillExt
             warnings=["No bills uploaded."],
         )
 
-    bills = [extract_bill(path, config) for path in file_paths]
+    try:
+        configured_workers = max(1, int(os.getenv("BILL_EXTRACTION_MAX_WORKERS", "3")))
+    except ValueError:
+        configured_workers = 3
+    worker_count = min(configured_workers, len(file_paths))
+    if worker_count == 1:
+        bills = [extract_bill(path, config) for path in file_paths]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            bills = list(executor.map(lambda path: extract_bill(path, config), file_paths))
     combined = combine_bills(bills)
     warnings: list[str] = []
     if combined.extraction_notes:

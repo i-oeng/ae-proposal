@@ -46,6 +46,10 @@ SUPABASE_PROPOSAL_BUCKET=aspan-proposals
 
 Without `ANTHROPIC_API_KEY`, the app uses documented fallback extraction/narrative behavior. Without Supabase variables, the API still runs, but proposal history and file persistence are disabled.
 
+Extraction results are cached by file content and model in `cache/extractions`. Monthly bills are processed with three concurrent workers by default; set `BILL_EXTRACTION_MAX_WORKERS` lower if your Anthropic account has strict rate limits. Re-uploading unchanged files and regenerating an unchanged proposal reuse cached model output without changing validation or calculation quality.
+
+Proposal narrative generation uses one Sonnet attempt by default, sanitizes any sentence containing an unauthorized number, and falls back to the deterministic validated narrative if the response is malformed. Set `NARRATIVE_MAX_ATTEMPTS=2` when a second model attempt is worth the additional latency.
+
 ## Run With Docker
 
 The Docker setup runs the React UI and FastAPI API together, plus n8n as a second service.
@@ -105,12 +109,12 @@ npm.cmd install
 npm.cmd run dev -- --hostname 127.0.0.1 --port 3001
 ```
 
-Open `http://127.0.0.1:3001`. The frontend calls FastAPI directly through `NEXT_PUBLIC_API_BASE_URL`, defaulting to `http://127.0.0.1:8001`.
+Open `http://127.0.0.1:3001`. The browser uses same-origin `/api` requests; Next.js proxies them to FastAPI through `API_INTERNAL_BASE_URL`, which defaults to `http://127.0.0.1:8001` for local development.
 
 ## Main Workflow
 
-1. Upload utility bills under `Utility bills`. Bill extraction starts immediately.
-2. Upload client PDFs, PPTX files, screenshots, or images under `Client information`. Client extraction starts independently and may run alongside bill extraction.
+1. Upload utility bills under `Utility bills`, then click `Extract bills`.
+2. Upload client PDFs, PPTX files, screenshots, or images under `Client information`, then click `Extract client info`. The two extractions can run at the same time.
 3. Review and edit bill/client values. Low-confidence extracted fields are highlighted.
 4. Click `Preview economics`.
 5. Review Grid Replacement and Grid + Diesel scenarios.

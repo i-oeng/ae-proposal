@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from core.config_loader import AppConfig
+from core.extraction_cache import cache_key_for_text, load_cached_model, store_cached_model
 from core.models import BillData, CalcResult, ClientInfo, NarrativeSections
 from core.utils import format_currency, format_kwp, format_number, load_local_env
 
@@ -29,6 +30,7 @@ Be concise, professional, and persuasive.
 Return strict JSON only.
 """
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+NARRATIVE_CACHE_VERSION = "proposal-narrative-v1"
 
 
 def _fallback_narrative(
@@ -184,19 +186,24 @@ def generate_narrative(
         return _fallback_narrative(bill, client, calc, facts_pack_text)
 
     payload = _payload_for_prompt(bill, client, calc, facts_pack_text, style_reference)
+    model = os.getenv("ANTHROPIC_TEXT_MODEL", DEFAULT_ANTHROPIC_MODEL)
+    cache_key = cache_key_for_text(NARRATIVE_CACHE_VERSION, payload, model)
+    cached = load_cached_model(cache_key, NarrativeSections)
+    if cached is not None:
+        return cached
     allowed = _allowed_numbers(bill, client, calc, config=config)
     last_error: Exception | None = None
-    for _attempt in range(2):
+    try:
+        max_attempts = max(1, int(os.getenv("NARRATIVE_MAX_ATTEMPTS", "1")))
+    except ValueError:
+        max_attempts = 1
+    for _attempt in range(max_attempts):
         try:
             generated = NarrativeSections.model_validate(_call_claude_narrative(payload))
             unauthorized = _numbers_in_text(" ".join(generated.model_dump().values())) - allowed
             if unauthorized:
-                payload += (
-                    "\n\nThe previous draft used unauthorized numbers. Regenerate with only these allowed "
-                    f"numeric strings: {sorted(allowed)}"
-                )
-                last_error = ValueError(f"Unauthorized numbers: {sorted(unauthorized)}")
-                continue
+                generated = _remove_unauthorized_number_sentences(generated, allowed)
+            store_cached_model(cache_key, generated)
             return generated
         except (ValidationError, json.JSONDecodeError, Exception) as exc:  # noqa: BLE001
             last_error = exc
@@ -204,5 +211,6 @@ def generate_narrative(
 
     fallback = _fallback_narrative(bill, client, calc, facts_pack_text)
     if last_error:
-        return _remove_unauthorized_number_sentences(fallback, allowed)
+        fallback = _remove_unauthorized_number_sentences(fallback, allowed)
+    store_cached_model(cache_key, fallback)
     return fallback

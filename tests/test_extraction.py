@@ -6,7 +6,8 @@ from core.models import BillData
 
 
 def test_extract_multiple_bills_uses_kwh_weighted_tariff(monkeypatch) -> None:
-    bills = [
+    bills = {
+        "jan.pdf":
         BillData(
             monthly_kwh=100,
             currency="XOF",
@@ -22,6 +23,7 @@ def test_extract_multiple_bills_uses_kwh_weighted_tariff(monkeypatch) -> None:
             penalties=100,
             field_confidence={"tariff_per_kwh": 0.9},
         ),
+        "feb.pdf":
         BillData(
             monthly_kwh=300,
             currency="XOF",
@@ -37,10 +39,10 @@ def test_extract_multiple_bills_uses_kwh_weighted_tariff(monkeypatch) -> None:
             penalties=300,
             field_confidence={"tariff_per_kwh": 0.9},
         ),
-    ]
+    }
 
     def fake_extract_bill(file_path, config):  # noqa: ARG001
-        return bills.pop(0)
+        return bills[file_path]
 
     monkeypatch.setattr(extraction, "extract_bill", fake_extract_bill)
     combined = extraction.extract_multiple_bills(["jan.pdf", "feb.pdf"], load_config())
@@ -55,7 +57,8 @@ def test_extract_multiple_bills_uses_kwh_weighted_tariff(monkeypatch) -> None:
 
 
 def test_extract_bill_collection_preserves_monthly_bills(monkeypatch) -> None:
-    bills = [
+    bills = {
+        "2025.01.pdf":
         BillData(
             source_file="2025.01.pdf",
             monthly_kwh=100,
@@ -65,6 +68,7 @@ def test_extract_bill_collection_preserves_monthly_bills(monkeypatch) -> None:
             billing_period_start=None,
             billing_period_end=None,
         ),
+        "2025.02.pdf":
         BillData(
             source_file="2025.02.pdf",
             monthly_kwh=200,
@@ -74,10 +78,10 @@ def test_extract_bill_collection_preserves_monthly_bills(monkeypatch) -> None:
             billing_period_start=None,
             billing_period_end=None,
         ),
-    ]
+    }
 
     def fake_extract_bill(file_path, config):  # noqa: ARG001
-        return bills.pop(0)
+        return bills[file_path]
 
     monkeypatch.setattr(extraction, "extract_bill", fake_extract_bill)
     result = extraction.extract_bill_collection(["2025.01.pdf", "2025.02.pdf"], load_config())

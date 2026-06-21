@@ -58,6 +58,13 @@ class SupabaseStore:
         result = self.client.table("proposal_runs").insert({"status": status}).execute()
         return result.data[0]["id"]
 
+    def ensure_proposal_run(self, run_id: str, status: str = "draft") -> None:
+        self.client.table("proposal_runs").upsert(
+            {"id": run_id, "status": status},
+            on_conflict="id",
+            ignore_duplicates=True,
+        ).execute()
+
     def insert_client(self, client: ClientInfo) -> str:
         result = (
             self.client.table("clients")
@@ -264,6 +271,18 @@ def safe_create_run(store: SupabaseStore | None, existing_run_id: str | None = N
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not create Supabase proposal run: %s", exc)
         return None
+
+
+def safe_ensure_run(store: SupabaseStore | None, run_id: str | None) -> str | None:
+    if not run_id:
+        return safe_create_run(store)
+    if store is None:
+        return run_id
+    try:
+        store.ensure_proposal_run(run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not ensure Supabase proposal run %s: %s", run_id, exc)
+    return run_id
 
 
 def safe_update_run(store: SupabaseStore | None, run_id: str | None, **kwargs: Any) -> None:

@@ -475,6 +475,16 @@ svg {
   clip: rect(0 0 0 0);
 }
 
+.uploadActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.uploadExtractButton {
+  min-width: 164px;
+}
+
 .dataBand,
 .scenarioPanel {
   display: grid;
@@ -1248,6 +1258,10 @@ textarea {
     justify-content: flex-start;
     margin-left: 44px;
     text-align: left;
+  }
+
+  .uploadExtractButton {
+    width: 100%;
   }
 
   .periodRow {

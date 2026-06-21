@@ -7,6 +7,7 @@ import {
   Calculator,
   CheckCircle2,
   Download,
+  FileSearch,
   FileText,
   FolderOpen,
   History,
@@ -258,10 +259,8 @@ const tariffFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4,
 });
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
-
 function apiUrl(path: string): string {
-  return `${apiBaseUrl}${path}`;
+  return `/api${path}`;
 }
 
 function asText(value: string | number | null | undefined): string {
@@ -354,18 +353,6 @@ function apiHeaders(runId: string | null, contentType = false): Record<string, s
     headers["X-Proposal-Run-Id"] = runId;
   }
   return headers;
-}
-
-async function reserveProposalRun(signal: AbortSignal): Promise<string | null> {
-  const response = await fetch(apiUrl("/proposal-runs"), {
-    method: "POST",
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(await readApiError(response));
-  }
-  const body = (await response.json()) as { run_id?: string | null };
-  return body.run_id || response.headers.get("x-proposal-run-id");
 }
 
 async function uploadFiles<T>(
@@ -769,8 +756,6 @@ export default function ProposalWorkspace() {
   const [resetKey, setResetKey] = useState(0);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const runIdRef = useRef<string | null>(null);
-  const runPromiseRef = useRef<Promise<string | null> | null>(null);
-  const runReservationAbortRef = useRef<AbortController | null>(null);
   const billRequestRef = useRef<AbortController | null>(null);
   const clientRequestRef = useRef<AbortController | null>(null);
   const billRequestSequence = useRef(0);
@@ -830,7 +815,6 @@ export default function ProposalWorkspace() {
 
   useEffect(() => {
     return () => {
-      runReservationAbortRef.current?.abort();
       billRequestRef.current?.abort();
       clientRequestRef.current?.abort();
     };
@@ -844,27 +828,13 @@ export default function ProposalWorkspace() {
     setProposalRunId(runId);
   }
 
-  async function ensureProposalRun(): Promise<string | null> {
+  function ensureProposalRun(): string {
     if (runIdRef.current) {
       return runIdRef.current;
     }
-    if (!runPromiseRef.current) {
-      const controller = new AbortController();
-      runReservationAbortRef.current = controller;
-      runPromiseRef.current = reserveProposalRun(controller.signal);
-    }
-
-    const pending = runPromiseRef.current;
-    try {
-      const runId = await pending;
-      rememberRunId(runId);
-      return runId;
-    } finally {
-      if (runPromiseRef.current === pending) {
-        runPromiseRef.current = null;
-        runReservationAbortRef.current = null;
-      }
-    }
+    const runId = crypto.randomUUID();
+    rememberRunId(runId);
+    return runId;
   }
 
   function scrollToTop() {
@@ -872,13 +842,11 @@ export default function ProposalWorkspace() {
   }
 
   function resetWorkspace() {
-    runReservationAbortRef.current?.abort();
     billRequestRef.current?.abort();
     clientRequestRef.current?.abort();
     billRequestSequence.current += 1;
     clientRequestSequence.current += 1;
     runIdRef.current = null;
-    runPromiseRef.current = null;
     setBillFiles([]);
     setClientFiles([]);
     setBillForm(emptyBillForm);
@@ -894,12 +862,10 @@ export default function ProposalWorkspace() {
   }
 
   function loadHistoryRun(run: HistoryRun) {
-    runReservationAbortRef.current?.abort();
     billRequestRef.current?.abort();
     clientRequestRef.current?.abort();
     billRequestSequence.current += 1;
     clientRequestSequence.current += 1;
-    runPromiseRef.current = null;
     runIdRef.current = run.id;
     const billSnapshot = historyBillSnapshot(run);
     const client = historyClientSnapshot(run);
@@ -928,6 +894,8 @@ export default function ProposalWorkspace() {
 
   function onBillFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
+    billRequestRef.current?.abort();
+    billRequestSequence.current += 1;
     setBillFiles(files);
     setBillForm(emptyBillForm);
     setMonthlyBills([]);
@@ -936,11 +904,16 @@ export default function ProposalWorkspace() {
       setBillExtraction(idleExtraction);
       return;
     }
-    void extractBills(files);
+    setBillExtraction({
+      phase: "idle",
+      text: `${files.length} bill${files.length === 1 ? "" : "s"} ready`,
+    });
   }
 
   function onClientFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
+    clientRequestRef.current?.abort();
+    clientRequestSequence.current += 1;
     setClientFiles(files);
     setClientForm(emptyClientForm);
     setPreview(null);
@@ -948,7 +921,10 @@ export default function ProposalWorkspace() {
       setClientExtraction(idleExtraction);
       return;
     }
-    void extractClient(files);
+    setClientExtraction({
+      phase: "idle",
+      text: `${files.length} client file${files.length === 1 ? "" : "s"} ready`,
+    });
   }
 
   async function extractBills(files: File[]) {
@@ -963,7 +939,7 @@ export default function ProposalWorkspace() {
     });
     setStatus(null);
     try {
-      const runId = await ensureProposalRun();
+      const runId = ensureProposalRun();
       if (sequence !== billRequestSequence.current) {
         return;
       }
@@ -1008,7 +984,7 @@ export default function ProposalWorkspace() {
     });
     setStatus(null);
     try {
-      const runId = await ensureProposalRun();
+      const runId = ensureProposalRun();
       if (sequence !== clientRequestSequence.current) {
         return;
       }
@@ -1218,6 +1194,9 @@ export default function ProposalWorkspace() {
                 multiple
                 onFiles={onBillFiles}
                 extraction={billExtraction}
+                actionLabel="Extract bills"
+                onExtract={() => void extractBills(billFiles)}
+                canExtract={billFiles.length > 0}
               />
               <UploadPanel
                 icon={<Building2 aria-hidden="true" />}
@@ -1228,6 +1207,9 @@ export default function ProposalWorkspace() {
                 multiple
                 onFiles={onClientFiles}
                 extraction={clientExtraction}
+                actionLabel="Extract client info"
+                onExtract={() => void extractClient(clientFiles)}
+                canExtract={clientFiles.length > 0}
               />
             </section>
 
@@ -1616,6 +1598,9 @@ function UploadPanel({
   multiple,
   onFiles,
   extraction,
+  actionLabel,
+  onExtract,
+  canExtract,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -1625,6 +1610,9 @@ function UploadPanel({
   multiple: boolean;
   onFiles: (event: ChangeEvent<HTMLInputElement>) => void;
   extraction: ExtractionState;
+  actionLabel: string;
+  onExtract: () => void;
+  canExtract: boolean;
 }) {
   return (
     <div className={`uploadPanel ${extraction.phase}`}>
@@ -1643,6 +1631,22 @@ function UploadPanel({
         <span>{fileLabel}</span>
         <input key={inputKey} type="file" accept={accept} multiple={multiple} onChange={onFiles} />
       </label>
+      <div className="uploadActions">
+        <button
+          className="secondaryButton uploadExtractButton"
+          type="button"
+          onClick={onExtract}
+          disabled={!canExtract || extraction.phase === "extracting"}
+          title={actionLabel}
+        >
+          {extraction.phase === "extracting" ? (
+            <Loader2 className="spin" aria-hidden="true" />
+          ) : (
+            <FileSearch aria-hidden="true" />
+          )}
+          {extraction.phase === "extracting" ? "Extracting" : actionLabel}
+        </button>
+      </div>
     </div>
   );
 }

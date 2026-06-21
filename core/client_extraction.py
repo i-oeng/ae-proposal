@@ -11,10 +11,12 @@ from pptx import Presentation
 
 from core.config_loader import AppConfig
 from core.extraction import DEFAULT_ANTHROPIC_MODEL, _content_block_for_file, _extract_json_object
+from core.extraction_cache import cache_key_for_files, load_cached_model, store_cached_model
 from core.models import ClientInfoDraft
 from core.utils import load_local_env
 
 logger = logging.getLogger(__name__)
+CLIENT_EXTRACTION_CACHE_VERSION = "client-extraction-v1"
 
 SUPPORTED_INDUSTRIES = {
     "manufacturing",
@@ -217,13 +219,21 @@ def extract_client_info(file_paths: list[str], config: AppConfig) -> ClientInfoD
     if not os.getenv("ANTHROPIC_API_KEY"):
         return fallback_client_info("ANTHROPIC_API_KEY not set; client extraction fallback used.")
 
+    model = os.getenv("ANTHROPIC_VISION_MODEL", DEFAULT_ANTHROPIC_MODEL)
+    cache_key = cache_key_for_files(CLIENT_EXTRACTION_CACHE_VERSION, existing_paths, model)
+    cached = load_cached_model(cache_key, ClientInfoDraft)
+    if cached is not None:
+        return cached
+
     last_error: Exception | None = None
     for _attempt in range(2):
         try:
             payload = _call_claude_for_client_info(existing_paths)
             payload["country"] = _normalize_country(payload.get("country"))
             payload["industry"] = _normalize_industry(payload.get("industry"))
-            return ClientInfoDraft.model_validate(payload)
+            draft = ClientInfoDraft.model_validate(payload)
+            store_cached_model(cache_key, draft)
+            return draft
         except (json.JSONDecodeError, ValidationError, OSError, Exception) as exc:  # noqa: BLE001
             logger.warning("Client info extraction attempt failed: %s", exc)
             last_error = exc

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8001}
+        API_INTERNAL_BASE_URL: http://127.0.0.1:8000
     image: aspan-proposal-engine:latest
     env_file:
       - .env
@@ -12,7 +12,7 @@ services:
       API_PORT: 8000
       FRONTEND_HOST: 0.0.0.0
       FRONTEND_PORT: 3000
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8001}
+      API_INTERNAL_BASE_URL: http://127.0.0.1:8000
     ports:
       - "3000:3000"
       - "${ASPAN_API_PORT:-8001}:8000"
