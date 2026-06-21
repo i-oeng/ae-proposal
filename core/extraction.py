@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from core.anthropic_client import get_anthropic_client
 from core.config_loader import AppConfig
 from core.extraction_cache import cache_key_for_files, load_cached_model, store_cached_model
 from core.models import BillData, BillExtractionResult, BillTariffPeriod
@@ -67,9 +68,7 @@ def _content_block_for_file(file_path: str) -> dict[str, Any]:
 
 def _call_claude_for_bill(file_path: str) -> dict[str, Any]:
     load_local_env()
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = get_anthropic_client()
     model = os.getenv("ANTHROPIC_VISION_MODEL", DEFAULT_ANTHROPIC_MODEL)
     prompt = """
 Extract utility bill data into strict JSON. Handle English, Russian, Kazakh, and French bills.

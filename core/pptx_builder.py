@@ -57,6 +57,7 @@ def _add_title(slide, title: str, subtitle: str | None = None) -> None:
     if subtitle:
         sub = slide.shapes.add_textbox(Inches(0.58), Inches(0.88), Inches(8.8), Inches(0.32))
         sub_frame = sub.text_frame
+        sub_frame.word_wrap = True
         sub_frame.text = subtitle
         sub_frame.paragraphs[0].runs[0].font.size = Pt(9)
         sub_frame.paragraphs[0].runs[0].font.color.rgb = _rgb(MUTED_COLOR)
@@ -73,6 +74,10 @@ def _add_text_box(slide, x: float, y: float, w: float, h: float, text: str, size
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     frame = box.text_frame
     frame.word_wrap = True
+    frame.margin_left = Inches(0.03)
+    frame.margin_right = Inches(0.03)
+    frame.margin_top = Inches(0.02)
+    frame.margin_bottom = Inches(0.02)
     frame.text = text
     for paragraph in frame.paragraphs:
         for run in paragraph.runs:
@@ -94,12 +99,18 @@ def _add_bullets(slide, x: float, y: float, w: float, h: float, bullets: list[st
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     frame = box.text_frame
     frame.clear()
+    frame.word_wrap = True
+    frame.margin_left = Inches(0.03)
+    frame.margin_right = Inches(0.03)
+    frame.margin_top = Inches(0.02)
+    frame.margin_bottom = Inches(0.02)
     for index, item in enumerate(bullets):
         paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
         paragraph.text = item
         paragraph.level = 0
         paragraph.font.size = Pt(size)
         paragraph.font.color.rgb = _rgb(DARK_COLOR)
+        paragraph.space_after = Pt(5)
 
 
 def _add_metric(slide, x: float, y: float, label: str, value: str, width: float = 2.1) -> None:
@@ -109,9 +120,10 @@ def _add_metric(slide, x: float, y: float, label: str, value: str, width: float 
     shape.line.color.rgb = _rgb(ACCENT_COLOR)
     frame = shape.text_frame
     frame.clear()
+    frame.word_wrap = True
     label_p = frame.paragraphs[0]
     label_p.text = label.upper()
-    label_p.font.size = Pt(7)
+    label_p.font.size = Pt(8)
     label_p.font.color.rgb = _rgb(MUTED_COLOR)
     value_p = frame.add_paragraph()
     value_p.text = value
@@ -132,6 +144,14 @@ def _clean_text(text: str | None) -> str:
         return ""
     cleaned = re.sub(r"\b(?:TODO|TBD)\b:?", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    cleaned = _clean_text(text)
+    if len(cleaned) <= limit:
+        return cleaned
+    shortened = cleaned[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,.;:")
+    return f"{shortened}..."
 
 
 def _is_placeholder_text(text: str) -> bool:
@@ -181,7 +201,7 @@ def _client_context_bullets(client: ClientInfo, calc: CalcResult) -> list[str]:
         f"Diesel generators: {'confirmed' if client.has_diesel_generators else 'not confirmed'}",
     ]
     if client.business_description:
-        bullets.insert(0, f"Client activity: {client.business_description}")
+        bullets.insert(0, f"Client activity: {_truncate_text(client.business_description, 150)}")
     if client.city:
         bullets.append(f"Site location: {client.city}")
     if client.grid_connection_kva is not None:
@@ -340,7 +360,12 @@ def build_pptx(
             f"Grid + Diesel cumulative savings: {format_currency(calc.scenario_grid_diesel.cumulative_savings, bill.currency)}",
         ],
     )
-    _add_bullets(slide, 0.72, 5.55, 8.8, 0.85, _client_context_bullets(client, calc)[:3], 9)
+    summary_context = [
+        item
+        for item in _client_context_bullets(client, calc)
+        if not item.startswith("Client activity:")
+    ][:3]
+    _add_bullets(slide, 0.72, 5.5, 8.8, 0.95, summary_context, 11)
 
     # Slide 3
     slide = _new_slide(prs, "Current Energy Situation")
@@ -362,11 +387,12 @@ def build_pptx(
                 else []
             ),
         ],
+        13,
     )
     current_text = _clean_text(narrative.current_energy_situation)
     if _is_placeholder_text(current_text):
         current_text = _current_energy_context(bill, client)
-    _add_text_box(slide, 5.05, 1.35, 4.2, 2.8, current_text, 12)
+    _add_text_box(slide, 5.05, 1.35, 4.2, 2.8, current_text, 13)
 
     # Slide 4
     slide = _new_slide(prs, "Proposed Solar Solution")
@@ -382,11 +408,12 @@ def build_pptx(
             f"Estimated annual production: {format_number(calc.annual_solar_production_kwh)} kWh",
             f"Daytime consumption offset cap: {format_number(calc.annual_daytime_consumption_kwh)} kWh",
         ],
+        13,
     )
     solution_text = _clean_text(narrative.proposed_solar_solution)
     if _is_placeholder_text(solution_text) or len(solution_text) < 120:
         solution_text = _solution_context(client, calc)
-    _add_text_box(slide, 5.1, 1.35, 4.1, 2.8, solution_text, 12)
+    _add_text_box(slide, 5.1, 1.35, 4.1, 2.8, solution_text, 13)
 
     # Slide 5
     slide = _new_slide(prs, "PPA Model Explanation")
@@ -403,11 +430,12 @@ def build_pptx(
             "Solar reduces daytime grid or diesel reliance.",
             "Contract details must be confirmed by Aspan Energy.",
         ],
+        13,
     )
 
     # Slide 6
     slide = _new_slide(prs, "Economic Analysis: Grid Replacement")
-    _add_bullets(slide, 0.72, 1.35, 4.5, 2.1, _scenario_bullets(calc.scenario_grid_replacement, bill.currency))
+    _add_bullets(slide, 0.72, 1.35, 4.5, 2.35, _scenario_bullets(calc.scenario_grid_replacement, bill.currency), 13)
     econ_text = _clean_text(narrative.economic_analysis_summary)
     if _is_placeholder_text(econ_text):
         econ_text = (
@@ -415,11 +443,11 @@ def build_pptx(
             "tariff baseline. The cumulative case applies the configured tariff escalation and PV degradation "
             "assumptions across the analysis horizon."
         )
-    _add_text_box(slide, 5.45, 1.35, 3.8, 2.4, econ_text, 12)
+    _add_text_box(slide, 5.45, 1.35, 3.8, 2.55, econ_text, 13)
 
     # Slide 7
     slide = _new_slide(prs, "Economic Analysis: Grid + Diesel")
-    _add_bullets(slide, 0.72, 1.35, 4.5, 2.1, _scenario_bullets(calc.scenario_grid_diesel, bill.currency))
+    _add_bullets(slide, 0.72, 1.35, 4.5, 2.35, _scenario_bullets(calc.scenario_grid_diesel, bill.currency), 13)
     _add_text_box(
         slide,
         5.45,
@@ -476,18 +504,18 @@ def build_pptx(
 
     # Slide 9
     slide = _new_slide(prs, "Market Context & Proposal Basis")
-    _add_bullets(slide, 0.72, 1.35, 8.55, 2.25, _market_context_bullets(client), 12)
-    _add_text_box(slide, 0.72, 4.05, 8.6, 0.55, _market_source_note(client), 9)
-    _add_bullets(slide, 0.72, 4.72, 8.55, 1.1, _client_context_bullets(client, calc), 9)
+    _add_bullets(slide, 0.72, 1.35, 8.55, 2.3, _market_context_bullets(client), 13)
+    _add_text_box(slide, 0.72, 3.9, 8.6, 0.5, _market_source_note(client), 10)
+    _add_bullets(slide, 0.72, 4.55, 8.55, 1.55, _client_context_bullets(client, calc), 10)
 
     # Slide 10
     slide = _new_slide(prs, "Delivery Plan & Next Steps")
     _add_section_heading(slide, 0.7, 1.28, 2.6, "Aspan scope")
-    _add_bullets(slide, 0.7, 1.68, 2.65, 3.6, _delivery_scope_bullets(narrative.scope_of_services), 10)
+    _add_bullets(slide, 0.7, 1.68, 2.65, 3.6, _delivery_scope_bullets(narrative.scope_of_services), 11)
     _add_section_heading(slide, 3.65, 1.28, 2.65, "Review process")
-    _add_bullets(slide, 3.65, 1.68, 2.65, 3.6, _delivery_process_bullets(narrative.implementation_process), 10)
+    _add_bullets(slide, 3.65, 1.68, 2.65, 3.6, _delivery_process_bullets(narrative.implementation_process), 11)
     _add_section_heading(slide, 6.55, 1.28, 2.65, "Immediate next steps")
-    _add_bullets(slide, 6.55, 1.68, 2.75, 3.6, _next_step_bullets(narrative.next_steps), 10)
+    _add_bullets(slide, 6.55, 1.68, 2.75, 3.6, _next_step_bullets(narrative.next_steps), 11)
     _add_text_box(
         slide,
         0.72,
@@ -495,7 +523,7 @@ def build_pptx(
         8.55,
         0.65,
         "Final dates, responsibilities, contract terms, and performance obligations remain subject to Aspan and client confirmation.",
-        9,
+        10,
     )
 
     # Slide 11
@@ -519,9 +547,24 @@ def build_pptx(
         f"Analysis horizon: {calc.assumptions.analysis_horizon_years} years",
         f"Production source: {calc.assumptions.production_source}",
     ]
-    assumption_lines.extend(calc.assumptions.confidence_notes)
-    assumption_lines.extend(calc.assumptions.extraction_notes)
-    _add_bullets(slide, 0.6, 1.18, 8.9, 4.75, assumption_lines[:18], 9)
+    assumption_notes = [
+        *calc.assumptions.confidence_notes,
+        *calc.assumptions.extraction_notes,
+    ]
+    split_at = (len(assumption_lines) + 1) // 2
+    _add_bullets(slide, 0.7, 1.25, 4.15, 3.7, assumption_lines[:split_at], 11)
+    _add_bullets(slide, 5.05, 1.25, 4.15, 3.7, assumption_lines[split_at:], 11)
+    if assumption_notes:
+        _add_section_heading(slide, 0.72, 5.12, 8.5, "Review notes")
+        _add_bullets(
+            slide,
+            0.72,
+            5.45,
+            8.55,
+            0.9,
+            [_truncate_text(note, 180) for note in assumption_notes[:2]],
+            10,
+        )
 
     for slide in prs.slides:
         for shape in slide.shapes:

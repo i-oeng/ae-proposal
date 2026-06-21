@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+from threading import Lock
 from typing import Any
 
 from pydantic import ValidationError
 
+from core.anthropic_client import get_anthropic_client
 from core.config_loader import AppConfig
 from core.extraction_cache import cache_key_for_text, load_cached_model, store_cached_model
 from core.models import BillData, CalcResult, ClientInfo, NarrativeSections
@@ -31,6 +33,8 @@ Return strict JSON only.
 """
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 NARRATIVE_CACHE_VERSION = "proposal-narrative-v1"
+_NARRATIVE_LOCKS: dict[str, Lock] = {}
+_NARRATIVE_LOCKS_GUARD = Lock()
 
 
 def _fallback_narrative(
@@ -148,9 +152,7 @@ def _remove_unauthorized_number_sentences(
 
 def _call_claude_narrative(prompt_payload: str) -> dict[str, Any]:
     load_local_env()
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = get_anthropic_client()
     model = os.getenv("ANTHROPIC_TEXT_MODEL", DEFAULT_ANTHROPIC_MODEL)
     message = client.messages.create(
         model=model,
@@ -191,26 +193,32 @@ def generate_narrative(
     cached = load_cached_model(cache_key, NarrativeSections)
     if cached is not None:
         return cached
-    allowed = _allowed_numbers(bill, client, calc, config=config)
-    last_error: Exception | None = None
-    try:
-        max_attempts = max(1, int(os.getenv("NARRATIVE_MAX_ATTEMPTS", "1")))
-    except ValueError:
-        max_attempts = 1
-    for _attempt in range(max_attempts):
+    with _NARRATIVE_LOCKS_GUARD:
+        generation_lock = _NARRATIVE_LOCKS.setdefault(cache_key, Lock())
+    with generation_lock:
+        cached = load_cached_model(cache_key, NarrativeSections)
+        if cached is not None:
+            return cached
+        allowed = _allowed_numbers(bill, client, calc, config=config)
+        last_error: Exception | None = None
         try:
-            generated = NarrativeSections.model_validate(_call_claude_narrative(payload))
-            unauthorized = _numbers_in_text(" ".join(generated.model_dump().values())) - allowed
-            if unauthorized:
-                generated = _remove_unauthorized_number_sentences(generated, allowed)
-            store_cached_model(cache_key, generated)
-            return generated
-        except (ValidationError, json.JSONDecodeError, Exception) as exc:  # noqa: BLE001
-            last_error = exc
-            payload += f"\n\nPrevious attempt failed validation: {exc}. Return stricter JSON."
+            max_attempts = max(1, int(os.getenv("NARRATIVE_MAX_ATTEMPTS", "1")))
+        except ValueError:
+            max_attempts = 1
+        for _attempt in range(max_attempts):
+            try:
+                generated = NarrativeSections.model_validate(_call_claude_narrative(payload))
+                unauthorized = _numbers_in_text(" ".join(generated.model_dump().values())) - allowed
+                if unauthorized:
+                    generated = _remove_unauthorized_number_sentences(generated, allowed)
+                store_cached_model(cache_key, generated)
+                return generated
+            except (ValidationError, json.JSONDecodeError, Exception) as exc:  # noqa: BLE001
+                last_error = exc
+                payload += f"\n\nPrevious attempt failed validation: {exc}. Return stricter JSON."
 
-    fallback = _fallback_narrative(bill, client, calc, facts_pack_text)
-    if last_error:
-        fallback = _remove_unauthorized_number_sentences(fallback, allowed)
-    store_cached_model(cache_key, fallback)
-    return fallback
+        fallback = _fallback_narrative(bill, client, calc, facts_pack_text)
+        if last_error:
+            fallback = _remove_unauthorized_number_sentences(fallback, allowed)
+        store_cached_model(cache_key, fallback)
+        return fallback

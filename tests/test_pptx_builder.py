@@ -62,7 +62,11 @@ def test_build_pptx_has_no_todos_and_labels_savings_chart(tmp_path: Path) -> Non
         industry="food_processing",
         country="Cote d'Ivoire",
         city="Abidjan",
-        business_description="Cocoa and food processing operation.",
+        business_description=(
+            "Leading food and beverage manufacturing company specializing in the production and "
+            "distribution of cocoa-based products and instant beverages for the West African market, "
+            "operating industrial production facilities in Abidjan's Zone Industrielle."
+        ),
         has_diesel_generators=True,
         grid_connection_kva=1250,
         available_roof_area_m2=5149,
@@ -98,3 +102,20 @@ def test_build_pptx_has_no_todos_and_labels_savings_chart(tmp_path: Path) -> Non
     ]
     assert charts
     assert charts[0].value_axis.axis_title.text_frame.text == "Savings (XOF)"
+
+    long_text_frames = [
+        shape.text_frame
+        for slide in prs.slides
+        for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False) and len(shape.text) > 80
+    ]
+    assert long_text_frames
+    assert all(frame.word_wrap for frame in long_text_frames)
+
+    delivery_slide = prs.slides[9]
+    delivery_frames = [
+        shape.text_frame
+        for shape in delivery_slide.shapes
+        if getattr(shape, "has_text_frame", False) and shape.text.strip()
+    ]
+    assert all(frame.word_wrap for frame in delivery_frames if len(frame.text) > 30)

@@ -3,11 +3,30 @@ from __future__ import annotations
 from core.calc_engine import calculate_proposal
 from core.config_loader import AppConfig
 from core.facts_pack import load_facts_pack
-from core.models import BillData, ClientInfo, ProposalResponse
+from core.models import BillData, ClientInfo, NarrativeSections, ProposalResponse
 from core.narrative import generate_narrative
 from core.pptx_builder import build_pptx
 from core.proposal_log import append_proposal_log
 from core.style_reference import select_style_reference
+
+
+def prepare_proposal_narrative(
+    bill: BillData,
+    client: ClientInfo,
+    config: AppConfig,
+) -> NarrativeSections:
+    """Precompute the slow model-backed narrative while the user reviews economics."""
+    calc = calculate_proposal(bill, client, config)
+    facts = load_facts_pack(client)
+    style = select_style_reference(client)
+    return generate_narrative(
+        bill=bill,
+        client=client,
+        calc=calc,
+        facts_pack_text=facts.text,
+        style_reference=style.text,
+        config=config,
+    )
 
 
 def generate_proposal_artifacts(
@@ -43,4 +62,3 @@ def generate_proposal_artifacts(
         narrative=narrative,
         warnings=warnings,
     )
-

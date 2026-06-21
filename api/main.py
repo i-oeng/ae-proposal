@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -24,7 +25,7 @@ from core.models import (
     DocumentExtractionResult,
     ProposalRequest,
 )
-from core.pipeline import generate_proposal_artifacts
+from core.pipeline import generate_proposal_artifacts, prepare_proposal_narrative
 from core.supabase_store import (
     get_supabase_store,
     safe_create_run,
@@ -39,8 +40,16 @@ from core.supabase_store import (
 
 logger = logging.getLogger(__name__)
 PERSISTENCE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="aspan-persistence")
+PREPARATION_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="aspan-preparation")
 
 app = FastAPI(title="Proposal Engine", version="0.1.0")
+
+
+def _prepare_narrative_in_background(request: ProposalRequest, config) -> None:
+    try:
+        prepare_proposal_narrative(request.bill, request.client, config)
+    except Exception:  # noqa: BLE001
+        logger.exception("Background proposal narrative preparation failed")
 
 app.add_middleware(
     CORSMiddleware,
@@ -427,6 +436,12 @@ def calculate_preview_endpoint(
         raise HTTPException(status_code=400, detail=f"Calculation failed: {exc}") from exc
     if store is not None and run_id is not None:
         _submit_persistence(_persist_calculation, store, run_id, request, calc)
+    if os.getenv("PREWARM_PROPOSAL_NARRATIVE", "true").strip().lower() not in {"0", "false", "no"}:
+        PREPARATION_EXECUTOR.submit(
+            _prepare_narrative_in_background,
+            request,
+            config,
+        )
     return calc
 
 

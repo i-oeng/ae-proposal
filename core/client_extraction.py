@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 from pptx import Presentation
 
+from core.anthropic_client import get_anthropic_client
 from core.config_loader import AppConfig
 from core.extraction import DEFAULT_ANTHROPIC_MODEL, _content_block_for_file, _extract_json_object
 from core.extraction_cache import cache_key_for_files, load_cached_model, store_cached_model
@@ -96,46 +98,42 @@ def _extract_pptx_text(file_path: str) -> str:
     return "\n\n".join(lines)
 
 
+def _content_block_for_client_file(file_path: str) -> dict[str, Any]:
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    if suffix == ".pptx":
+        text = _extract_pptx_text(file_path)
+        return {
+            "type": "text",
+            "text": (
+                f"Extracted text from uploaded PowerPoint file {path.name}:\n\n"
+                f"{text or '[No text found in PowerPoint shapes.]'}"
+            ),
+        }
+    if suffix == ".pdf":
+        text = _extract_pdf_text(file_path)
+        if len(text.strip()) >= 80:
+            return {
+                "type": "text",
+                "text": (
+                    f"Extracted text from uploaded PDF file {path.name}:\n\n"
+                    f"{text[:45000]}"
+                ),
+            }
+    return _content_block_for_file(file_path)
+
+
 def _content_blocks_for_client_files(file_paths: list[str]) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    for file_path in file_paths:
-        path = Path(file_path)
-        suffix = path.suffix.lower()
-        if suffix == ".pptx":
-            text = _extract_pptx_text(file_path)
-            blocks.append(
-                {
-                    "type": "text",
-                    "text": (
-                        f"Extracted text from uploaded PowerPoint file {path.name}:\n\n"
-                        f"{text or '[No text found in PowerPoint shapes.]'}"
-                    ),
-                }
-            )
-        elif suffix == ".pdf":
-            text = _extract_pdf_text(file_path)
-            if len(text.strip()) >= 80:
-                blocks.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Extracted text from uploaded PDF file {path.name}:\n\n"
-                            f"{text[:45000]}"
-                        ),
-                    }
-                )
-            else:
-                blocks.append(_content_block_for_file(file_path))
-        else:
-            blocks.append(_content_block_for_file(file_path))
-    return blocks
+    if len(file_paths) < 2:
+        return [_content_block_for_client_file(path) for path in file_paths]
+    worker_count = min(len(file_paths), 4)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(_content_block_for_client_file, file_paths))
 
 
 def _call_claude_for_client_info(file_paths: list[str]) -> dict[str, Any]:
     load_local_env()
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = get_anthropic_client()
     model = os.getenv("ANTHROPIC_VISION_MODEL", DEFAULT_ANTHROPIC_MODEL)
     prompt = """
 Extract client information for a commercial solar/PPA proposal.
