@@ -114,11 +114,27 @@ SUPABASE_PROPOSAL_BUCKET=aspan-proposals
 
 Do not commit `.env`. The frontend does not need the Supabase secret or Anthropic key.
 
+For a guided Windows setup, add the credentials to `.env` after the script creates it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+On macOS or Linux:
+
+```bash
+sh scripts/setup.sh
+```
+
+Both scripts verify Docker, create `.env` when missing, build the containers, wait for API health, and print the application URLs. The app can start without external credentials, but real extraction requires Anthropic and History requires Supabase.
+
 ### 2. Start the Stack
 
 ```powershell
 docker compose up -d --build
 ```
+
+Skip this command when the setup script has already started the stack.
 
 Docker starts:
 
@@ -853,7 +869,7 @@ Dockerfile            Production application image
 
 ## Sample Output
 
-Generated proposals appear under `outputs/`. The repository also includes representative NESKAO proposal files for review. Regenerate the sample after calculation, narrative, or PowerPoint-builder changes so it reflects the current code.
+Generated proposals appear under `outputs/`. Keep final sample proposals outside the repository, for example in the delivery folder shared with reviewers. Regenerate the sample after calculation, narrative, or PowerPoint-builder changes so it reflects the current code.
 
 Create a deterministic sample with:
 

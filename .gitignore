@@ -11,13 +11,9 @@ frontend/.next/
 frontend/out/
 frontend/.env.local
 frontend/tsconfig.tsbuildinfo
-cache/nasa_power/
-cache/uploads/
-cache/extractions/
-cache/pending_uploads/
-cache/diagnostic_*.json
+cache/**
+!cache/.gitkeep
 outputs/*.pptx
 !outputs/.gitkeep
-logs/*.jsonl
-!logs/proposal_runs.jsonl
-logs/*.log
+logs/**
+!logs/.gitkeep
